@@ -35,6 +35,8 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
     db = Database(settings.database_path)
+    await db.init()
+    await db.prune_old_seen()
 
     async with aiohttp.ClientSession() as session:
         kufar = KufarClient(session, search_size=settings.search_size)

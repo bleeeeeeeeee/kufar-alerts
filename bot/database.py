@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any, AsyncIterator
 from urllib.parse import parse_qs, urlparse
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -30,6 +33,7 @@ CREATE TABLE IF NOT EXISTS seen_ads (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
+CREATE INDEX IF NOT EXISTS idx_seen_ads_alert ON seen_ads(alert_id);
 """
 
 
@@ -44,7 +48,7 @@ class Alert:
 
     @property
     def search_params(self) -> dict[str, str]:
-        params = dict(self.params)
+        params = {k: v for k, v in self.params.items() if not str(k).startswith("_")}
         params["query"] = self.query
         return params
 
@@ -52,14 +56,36 @@ class Alert:
 class Database:
     def __init__(self, path: str) -> None:
         self.path = path
+        self._ready = False
+
+    async def init(self) -> None:
+        db_path = Path(self.path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Database path: %s (exists=%s)", self.path, db_path.exists())
+
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA foreign_keys=ON")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.executescript(SCHEMA)
+            await db.commit()
+
+        alerts, seen = await self.stats()
+        logger.info("Database ready: %s alerts, %s seen records", alerts, seen)
+        self._ready = True
+
+    async def stats(self) -> tuple[int, int]:
+        async with self._db() as db:
+            alerts = (await (await db.execute("SELECT COUNT(*) FROM alerts")).fetchone())[0]
+            seen = (await (await db.execute("SELECT COUNT(*) FROM seen_ads")).fetchone())[0]
+        return int(alerts), int(seen)
 
     @asynccontextmanager
     async def _db(self) -> AsyncIterator[aiosqlite.Connection]:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
-            await db.executescript(SCHEMA)
-            await db.commit()
+            await db.execute("PRAGMA foreign_keys=ON")
             yield db
 
     async def create_alert(
@@ -69,7 +95,7 @@ class Database:
         query: str,
         params: dict[str, Any] | None = None,
     ) -> Alert:
-        params = params or {}
+        params = {k: v for k, v in (params or {}).items() if not str(k).startswith("_")}
         async with self._db() as db:
             cursor = await db.execute(
                 """
@@ -80,6 +106,7 @@ class Database:
             )
             await db.commit()
             alert_id = cursor.lastrowid
+        logger.info("Created alert %s for user %s", alert_id, user_id)
         return Alert(id=alert_id, user_id=user_id, name=name, query=query, params=params)
 
     async def get_user_alerts(self, user_id: int) -> list[Alert]:
@@ -144,6 +171,7 @@ class Database:
         new_name = name if name is not None else alert.name
         new_query = query if query is not None else alert.query
         new_params = params if params is not None else alert.params
+        new_params = {k: v for k, v in new_params.items() if not str(k).startswith("_")}
 
         async with self._db() as db:
             await db.execute(
@@ -204,6 +232,15 @@ class Database:
     async def seed_seen(self, alert_id: int, ad_ids: list[int]) -> None:
         await self.mark_seen(alert_id, ad_ids)
 
+    async def prune_old_seen(self, days: int = 30) -> int:
+        async with self._db() as db:
+            cursor = await db.execute(
+                "DELETE FROM seen_ads WHERE seen_at < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     def _row_to_alert(self, row: aiosqlite.Row) -> Alert:
         params = json.loads(row["params_json"] or "{}")
         return Alert(
@@ -226,7 +263,7 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
     params: dict[str, str] = {}
     query = ""
 
-    skip_keys = {"query", "cursor", "page", "size", "lang"}
+    skip_keys = {"query", "cursor", "page", "size", "lang", "sort"}
     for key, values in qs.items():
         if not values:
             continue
@@ -235,7 +272,6 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
         elif key not in skip_keys:
             params[key] = values[0]
 
-    # Path-based search: /l/... or category in path
     path_parts = [p for p in parsed.path.split("/") if p]
     if not params.get("cat") and path_parts:
         for part in path_parts:
@@ -266,7 +302,7 @@ def format_alert_summary(alert: Alert) -> str:
         lines.append(f"💰 {format_price_display(alert.params['prc'])}")
     lines.append("✅ Активна" if alert.active else "⏸ На паузе")
 
-    search_params = {k: v for k, v in alert.params.items() if not k.startswith("_")}
+    search_params = {k: v for k, v in alert.params.items() if not str(k).startswith("_")}
     url = build_search_url(alert.query, **search_params)
     lines.append(f'🔗 <a href="{url}">Поиск на Kufar</a>')
 

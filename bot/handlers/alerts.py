@@ -235,7 +235,7 @@ async def cmd_list(message: Message, db: Database) -> None:
         await track_message(message.from_user.id, sent.message_id)
         return
 
-    text = "<b>Ваши подписки:</b>\n\n" + "\n\n".join(
+    text = f"<b>Ваши подписки ({len(alerts)}):</b>\n\n" + "\n\n".join(
         format_alert_summary(alert) for alert in alerts
     )
     sent = await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
