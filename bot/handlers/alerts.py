@@ -314,6 +314,7 @@ async def cmd_list(message: Message, db: Database) -> None:
     text = "<b>Ваши подписки:</b>\n\n" + "\n\n".join(
         format_alert_summary(alert) for alert in alerts
     )
+    text += "\n\n✏️ Редактировать: /edit"
     await message.answer(text, parse_mode="HTML")
 
 

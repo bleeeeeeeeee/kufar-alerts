@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings
 from bot.database import Database
-from bot.handlers import alerts, start
+from bot.handlers import alerts, edit, start
 from bot.kufar import KufarClient
 from bot.middleware import InjectMiddleware
 from bot.poller import AlertPoller
@@ -44,6 +44,7 @@ async def main() -> None:
 
         dp.include_router(start.router)
         dp.include_router(alerts.router)
+        dp.include_router(edit.router)
 
         poller = AlertPoller(
             bot=bot,

@@ -128,6 +128,54 @@ class Database:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def update_alert(
+        self,
+        alert_id: int,
+        user_id: int,
+        *,
+        name: str | None = None,
+        query: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Alert | None:
+        alert = await self.get_alert(alert_id, user_id)
+        if not alert:
+            return None
+
+        new_name = name if name is not None else alert.name
+        new_query = query if query is not None else alert.query
+        new_params = params if params is not None else alert.params
+
+        async with self._db() as db:
+            await db.execute(
+                """
+                UPDATE alerts
+                SET name = ?, query = ?, params_json = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (
+                    new_name,
+                    new_query,
+                    json.dumps(new_params, ensure_ascii=False),
+                    alert_id,
+                    user_id,
+                ),
+            )
+            await db.commit()
+
+        return Alert(
+            id=alert_id,
+            user_id=user_id,
+            name=new_name,
+            query=new_query,
+            params=new_params,
+            active=alert.active,
+        )
+
+    async def clear_seen(self, alert_id: int) -> None:
+        async with self._db() as db:
+            await db.execute("DELETE FROM seen_ads WHERE alert_id = ?", (alert_id,))
+            await db.commit()
+
     async def mark_seen(self, alert_id: int, ad_ids: list[int]) -> None:
         if not ad_ids:
             return
