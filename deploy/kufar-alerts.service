@@ -1,0 +1,15 @@
+[Unit]
+Description=Kufar Alerts Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=bot
+WorkingDirectory=/opt/kufar-alerts
+EnvironmentFile=/opt/kufar-alerts/.env
+ExecStart=/opt/kufar-alerts/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

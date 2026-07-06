@@ -1,0 +1,19 @@
+app = 'kufar-alerts'
+primary_region = 'waw'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  POLL_INTERVAL = '45'
+  SEARCH_SIZE = '30'
+  DATABASE_PATH = '/data/kufar_alerts.db'
+
+[mounts]
+  source = 'kufar_data'
+  destination = '/data'
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1

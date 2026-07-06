@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: kufar-alerts
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: kufar-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: POLL_INTERVAL
+        value: "45"
+      - key: SEARCH_SIZE
+        value: "30"
+      - key: DATABASE_PATH
+        value: /data/kufar_alerts.db
