@@ -247,6 +247,7 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
 
 
 from bot.catalog import category_name
+from bot.kufar import build_search_url
 from bot.locations import format_location
 
 
@@ -264,4 +265,9 @@ def format_alert_summary(alert: Alert) -> str:
 
         lines.append(f"💰 {format_price_display(alert.params['prc'])}")
     lines.append("✅ Активна" if alert.active else "⏸ На паузе")
+
+    search_params = {k: v for k, v in alert.params.items() if not k.startswith("_")}
+    url = build_search_url(alert.query, **search_params)
+    lines.append(f'🔗 <a href="{url}">Поиск на Kufar</a>')
+
     return "\n".join(lines)

@@ -220,6 +220,7 @@ async def confirm_new(
         f"Загружено {seeded} текущих объявлений — уведомления только о новых.",
         parse_mode="HTML",
         reply_markup=MAIN_MENU,
+        disable_web_page_preview=True,
     )
     await track_message(callback.from_user.id, sent.message_id)
     await callback.answer()
@@ -237,7 +238,7 @@ async def cmd_list(message: Message, db: Database) -> None:
     text = "<b>Ваши подписки:</b>\n\n" + "\n\n".join(
         format_alert_summary(alert) for alert in alerts
     )
-    sent = await message.answer(text, parse_mode="HTML")
+    sent = await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
     await track_message(message.from_user.id, sent.message_id)
 
 

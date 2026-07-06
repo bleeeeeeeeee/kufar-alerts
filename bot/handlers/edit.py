@@ -68,7 +68,7 @@ async def _finish_edit(
     text = f"✅ Подписка обновлена!\n\n{format_alert_summary(alert)}"
     if reseed:
         text += f"\n\nЗагружено {seeded} объявлений — уведомления только о новых."
-    sent = await message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU)
+    sent = await message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU, disable_web_page_preview=True)
     await track_message(message.from_user.id, sent.message_id)
 
 
@@ -91,6 +91,7 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database) -> None:
             f"Редактирование подписки:\n\n{format_alert_summary(alert)}\n\nЧто изменить?",
             parse_mode="HTML",
             reply_markup=edit_fields_keyboard(alert_id),
+            disable_web_page_preview=True,
         )
         await track_message(user_id, sent.message_id)
         return
@@ -143,6 +144,7 @@ async def edit_pick(callback: CallbackQuery, state: FSMContext, db: Database) ->
         f"Редактирование подписки:\n\n{format_alert_summary(alert)}\n\nЧто изменить?",
         parse_mode="HTML",
         reply_markup=edit_fields_keyboard(alert_id),
+        disable_web_page_preview=True,
     )
     await callback.answer()
 
