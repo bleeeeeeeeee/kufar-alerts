@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
-from bot.utils.chat import clear_user_chat, track_message
+from bot.utils.chat import track_message
 
 router = Router()
 
@@ -39,7 +39,6 @@ HELP_TEXT = """
 <b>📋 Управление</b>
 • Подписки — список всех подписок
 • Редактировать — изменить фильтры
-• Очистить чат — удалить сообщения бота
 
 Проверка новых объявлений — каждые ~45 секунд.
 """
@@ -62,20 +61,4 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(F.text == MAIN_MENU_BUTTONS["help"])
 async def cmd_help(message: Message) -> None:
     sent = await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
-    await track_message(message.from_user.id, sent.message_id)
-
-
-@router.message(Command("clear"))
-@router.message(F.text == MAIN_MENU_BUTTONS["clear"])
-async def cmd_clear(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    deleted = await clear_user_chat(message.bot, message.from_user.id, message.chat.id)
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    sent = await message.answer(
-        f"🧹 Удалено сообщений: {deleted}",
-        reply_markup=MAIN_MENU,
-    )
     await track_message(message.from_user.id, sent.message_id)

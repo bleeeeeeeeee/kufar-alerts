@@ -5,7 +5,6 @@ MAIN_MENU_BUTTONS = {
     "list": "📋 Мои подписки",
     "edit": "✏️ Редактировать",
     "help": "📖 Инструкция",
-    "clear": "🧹 Очистить чат",
 }
 
 MAIN_MENU = ReplyKeyboardMarkup(
@@ -18,7 +17,6 @@ MAIN_MENU = ReplyKeyboardMarkup(
             KeyboardButton(text=MAIN_MENU_BUTTONS["edit"]),
             KeyboardButton(text=MAIN_MENU_BUTTONS["help"]),
         ],
-        [KeyboardButton(text=MAIN_MENU_BUTTONS["clear"])],
     ],
     resize_keyboard=True,
     input_field_placeholder="Выберите действие или введите команду",
