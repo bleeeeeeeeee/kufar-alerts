@@ -15,7 +15,7 @@ from bot.config import get_settings
 from bot.database import Database
 from bot.handlers import alerts, edit, pickers, start
 from bot.kufar import KufarClient
-from bot.middleware import InjectMiddleware
+from bot.middleware import DedupMiddleware, InjectMiddleware
 from bot.poller import AlertPoller
 
 logging.basicConfig(
@@ -40,6 +40,7 @@ async def main() -> None:
         kufar = KufarClient(session, search_size=settings.search_size)
         await kufar.load_category_tree()
 
+        dp.update.middleware(DedupMiddleware())
         dp.update.middleware(InjectMiddleware(db, kufar))
 
         dp.include_router(start.router)
@@ -56,8 +57,13 @@ async def main() -> None:
         poller.start()
 
         logger.info("Bot started")
+        await bot.delete_webhook(drop_pending_updates=True)
         try:
-            await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+            await dp.start_polling(
+                bot,
+                allowed_updates=dp.resolve_used_update_types(),
+                drop_pending_updates=True,
+            )
         finally:
             await poller.stop()
             await bot.session.close()
