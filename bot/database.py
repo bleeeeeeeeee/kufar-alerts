@@ -246,6 +246,10 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
     return query, params
 
 
+from bot.kufar import REGIONS
+from bot.price import format_price_display
+
+
 def format_alert_summary(alert: Alert) -> str:
     lines = [f"<b>{alert.name}</b>", f"ID: {alert.id}"]
     if alert.query:
@@ -253,8 +257,12 @@ def format_alert_summary(alert: Alert) -> str:
     if alert.params.get("cat"):
         lines.append(f"📂 Категория: {alert.params['cat']}")
     if alert.params.get("rgn"):
-        lines.append(f"📍 Регион: {alert.params['rgn']}")
+        try:
+            region = REGIONS.get(int(alert.params["rgn"]), alert.params["rgn"])
+        except (TypeError, ValueError):
+            region = alert.params["rgn"]
+        lines.append(f"📍 Регион: {region}")
     if alert.params.get("prc"):
-        lines.append(f"💰 Цена: {alert.params['prc']}")
+        lines.append(f"💰 Цена: {format_price_display(alert.params['prc'])}")
     lines.append("✅ Активна" if alert.active else "⏸ На паузе")
     return "\n".join(lines)

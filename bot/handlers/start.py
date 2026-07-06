@@ -1,42 +1,75 @@
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+
+from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
+from bot.utils.chat import clear_user_chat, track_message
 
 router = Router()
 
 HELP_TEXT = """
-<b>Kufar Alerts</b> — оповещения о новых объявлениях на kufar.by
+<b>📖 Инструкция — Kufar Alerts</b>
 
-<b>Команды:</b>
-/new — создать подписку на поиск
-/list — мои подписки
-/edit — редактировать подписку
-/edit ID — редактировать по ID
-/pause ID — поставить на паузу
-/resume ID — возобновить
-/delete ID — удалить подписку
-/help — справка
+Бот присылает уведомления о <b>новых</b> объявлениях на kufar.by по вашим фильтрам.
 
-<b>Как создать подписку:</b>
+<b>➕ Создать подписку</b>
 1. Настройте поиск на <a href="https://www.kufar.by">kufar.by</a>
-2. Скопируйте URL из адресной строки
-3. Отправьте /new и вставьте ссылку
+2. Скопируйте ссылку из адресной строки
+3. Нажмите «Новая подписка» и вставьте ссылку
 
-Или создайте подписку вручную — бот спросит запрос, категорию, регион и цену.
+Или настройте вручную — бот спросит запрос, категорию, регион и цену.
 
-Бот проверяет новые объявления каждые ~45 секунд и присылает уведомление с фото и ссылкой.
+<b>💰 Как вводить цену</b>
+• <code>1500</code> — до 1500 BYN
+• <code>500-1500</code> — от 500 до 1500 BYN
+• <code>500+</code> — от 500 BYN и выше
+• <code>-</code> — без фильтра по цене
+
+<b>📍 Регионы</b>
+1 — Брест, 2 — Витебск, 3 — Гомель
+4 — Гродно, 5 — Могилёв, 6 — Минская обл., 7 — Минск
+
+<b>📋 Управление</b>
+• Подписки — список всех подписок
+• Редактировать — изменить фильтры
+• Очистить чат — удалить сообщения бота
+
+Проверка новых объявлений — каждые ~45 секунд.
 """
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
-    await message.answer(
-        "👋 Привет! Я слежу за новыми объявлениями на Kufar.\n\n"
-        "Создай подписку командой /new или посмотри справку /help",
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    sent = await message.answer(
+        "👋 <b>Kufar Alerts</b>\n\n"
+        "Слежу за новыми объявлениями на Kufar и присылаю уведомления.\n\n"
+        "Нажмите <b>➕ Новая подписка</b> или откройте <b>📖 Инструкцию</b>.",
         parse_mode="HTML",
+        reply_markup=MAIN_MENU,
     )
+    await track_message(message.from_user.id, sent.message_id)
 
 
 @router.message(Command("help"))
+@router.message(F.text == MAIN_MENU_BUTTONS["help"])
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
+    sent = await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
+    await track_message(message.from_user.id, sent.message_id)
+
+
+@router.message(Command("clear"))
+@router.message(F.text == MAIN_MENU_BUTTONS["clear"])
+async def cmd_clear(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    deleted = await clear_user_chat(message.bot, message.from_user.id, message.chat.id)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    sent = await message.answer(
+        f"🧹 Удалено сообщений: {deleted}",
+        reply_markup=MAIN_MENU,
+    )
+    await track_message(message.from_user.id, sent.message_id)

@@ -6,9 +6,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.database import Alert, Database, format_alert_summary, parse_kufar_url
-from bot.handlers.alerts import skip_keyboard
+from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
 from bot.kufar import KufarClient, REGIONS, build_search_url
+from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
 from bot.states import EditAlertStates
+from bot.utils.chat import WizardCleaner, track_message
 
 router = Router()
 
@@ -58,15 +60,19 @@ async def _finish_edit(
     *,
     reseed: bool = True,
 ) -> None:
+    cleaner = WizardCleaner(state)
+    await cleaner.cleanup_wizard(message.bot, message.chat.id)
     seeded = await _seed_alert(alert, kufar, db) if reseed else 0
     await state.clear()
     text = f"✅ Подписка обновлена!\n\n{format_alert_summary(alert)}"
     if reseed:
         text += f"\n\nЗагружено {seeded} объявлений — уведомления только о новых."
-    await message.answer(text, parse_mode="HTML")
+    sent = await message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU)
+    await track_message(message.from_user.id, sent.message_id)
 
 
 @router.message(Command("edit"))
+@router.message(F.text == MAIN_MENU_BUTTONS["edit"])
 async def cmd_edit(message: Message, state: FSMContext, db: Database) -> None:
     await state.clear()
     parts = (message.text or "").split()
@@ -76,25 +82,29 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database) -> None:
         alert_id = int(parts[1])
         alert = await db.get_alert(alert_id, user_id)
         if not alert:
-            await message.answer("Подписка не найдена.")
+            sent = await message.answer("Подписка не найдена.")
+            await track_message(user_id, sent.message_id)
             return
         await state.update_data(edit_alert_id=alert_id)
-        await message.answer(
+        sent = await message.answer(
             f"Редактирование подписки:\n\n{format_alert_summary(alert)}\n\nЧто изменить?",
             parse_mode="HTML",
             reply_markup=edit_fields_keyboard(alert_id),
         )
+        await track_message(user_id, sent.message_id)
         return
 
     alerts = await db.get_user_alerts(user_id)
     if not alerts:
-        await message.answer("У вас нет подписок. Создайте: /new")
+        sent = await message.answer("У вас нет подписок. Создайте: ➕ Новая подписка")
+        await track_message(user_id, sent.message_id)
         return
 
-    await message.answer(
+    sent = await message.answer(
         "Выберите подписку для редактирования:",
         reply_markup=alerts_list_keyboard(alerts),
     )
+    await track_message(user_id, sent.message_id)
 
 
 @router.callback_query(F.data == "edit:cancel")
@@ -187,38 +197,40 @@ async def edit_field_pick(callback: CallbackQuery, state: FSMContext, db: Databa
         )
         await state.set_state(EditAlertStates.waiting_region)
     elif field == "price":
-        current = alert.params.get("prc", "—")
+        current = format_price_display(alert.params.get("prc")) or "—"
         await callback.message.edit_text(
-            f"Текущая цена: <code>{current}</code>\n\n"
-            "Введите минимальную цену в BYN:",
+            f"Текущая цена: <b>{current}</b>\n\n{PRICE_INPUT_HINT}",
             parse_mode="HTML",
-            reply_markup=skip_keyboard(f"edit:skip_price_min:{alert_id}"),
+            reply_markup=skip_keyboard(f"edit:skip_price:{alert_id}"),
         )
-        await state.set_state(EditAlertStates.waiting_price_min)
+        await state.set_state(EditAlertStates.waiting_price)
 
     await callback.answer()
 
 
 @router.message(EditAlertStates.waiting_name)
 async def edit_name(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+    cleaner = WizardCleaner(state)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     name = (message.text or "").strip()
     if not name:
-        await message.answer("Название не может быть пустым.")
+        await cleaner.send(message, "Название не может быть пустым.", delete_user=True)
         return
 
     alert = await db.update_alert(alert_id, message.from_user.id, name=name)
     if not alert:
-        await message.answer("Подписка не найдена.")
+        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
         await state.clear()
         return
 
+    await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert, reseed=False)
 
 
 @router.message(EditAlertStates.waiting_query)
 async def edit_query(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+    cleaner = WizardCleaner(state)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     text = (message.text or "").strip()
@@ -226,41 +238,45 @@ async def edit_query(message: Message, state: FSMContext, db: Database, kufar: K
 
     alert = await db.update_alert(alert_id, message.from_user.id, query=query)
     if not alert:
-        await message.answer("Подписка не найдена.")
+        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
         await state.clear()
         return
 
+    await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert)
 
 
 @router.message(EditAlertStates.waiting_url)
 async def edit_url(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+    cleaner = WizardCleaner(state)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     try:
         query, params = parse_kufar_url(message.text or "")
     except ValueError as exc:
-        await message.answer(str(exc))
+        await cleaner.send(message, str(exc), delete_user=True)
         return
 
     alert = await db.update_alert(alert_id, message.from_user.id, query=query, params=params)
     if not alert:
-        await message.answer("Подписка не найдена.")
+        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
         await state.clear()
         return
 
+    await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert)
 
 
 @router.message(EditAlertStates.waiting_category)
 async def edit_category(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+    cleaner = WizardCleaner(state)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     text = (message.text or "").strip()
 
     alert = await db.get_alert(alert_id, message.from_user.id)
     if not alert:
-        await message.answer("Подписка не найдена.")
+        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
         await state.clear()
         return
 
@@ -270,22 +286,26 @@ async def edit_category(message: Message, state: FSMContext, db: Database, kufar
     elif text.isdigit():
         params["cat"] = text
     else:
-        await message.answer("Введите числовой ID или <code>-</code> для удаления.", parse_mode="HTML")
+        await cleaner.send(
+            message, "Введите числовой ID или <code>-</code> для удаления.", parse_mode="HTML", delete_user=True
+        )
         return
 
     alert = await db.update_alert(alert_id, message.from_user.id, params=params)
+    await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert)
 
 
 @router.message(EditAlertStates.waiting_region)
 async def edit_region(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+    cleaner = WizardCleaner(state)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     text = (message.text or "").strip()
 
     alert = await db.get_alert(alert_id, message.from_user.id)
     if not alert:
-        await message.answer("Подписка не найдена.")
+        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
         await state.clear()
         return
 
@@ -295,64 +315,19 @@ async def edit_region(message: Message, state: FSMContext, db: Database, kufar: 
     elif text.isdigit():
         params["rgn"] = text
     else:
-        await message.answer("Введите числовой ID или <code>-</code> для удаления.", parse_mode="HTML")
+        await cleaner.send(
+            message, "Введите числовой ID или <code>-</code> для удаления.", parse_mode="HTML", delete_user=True
+        )
         return
 
     alert = await db.update_alert(alert_id, message.from_user.id, params=params)
+    await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert)
 
 
-@router.callback_query(F.data.startswith("edit:skip_price_min:"))
-async def edit_skip_price_min(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data.startswith("edit:skip_price:"))
+async def edit_skip_price(callback: CallbackQuery, state: FSMContext, db: Database, kufar: KufarClient) -> None:
     alert_id = int(callback.data.split(":")[-1])
-    await state.update_data(edit_alert_id=alert_id, edit_params_patch={"_clear_price": True})
-    await callback.message.edit_text(
-        "Введите максимальную цену в BYN:",
-        reply_markup=skip_keyboard(f"edit:skip_price_max:{alert_id}"),
-    )
-    await state.set_state(EditAlertStates.waiting_price_max)
-    await callback.answer()
-
-
-@router.message(EditAlertStates.waiting_price_min)
-async def edit_price_min(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    data = await state.get_data()
-    alert_id = data.get("edit_alert_id")
-    text = (message.text or "").strip()
-
-    if text == "-":
-        alert = await db.get_alert(alert_id, message.from_user.id)
-        if not alert:
-            await message.answer("Подписка не найдена.")
-            await state.clear()
-            return
-        params = dict(alert.params)
-        params.pop("prc", None)
-        params.pop("_price_min", None)
-        alert = await db.update_alert(alert_id, message.from_user.id, params=params)
-        await _finish_edit(message, state, db, kufar, alert)
-        return
-
-    if not text.isdigit():
-        await message.answer("Введите число (BYN) или <code>-</code> для удаления.", parse_mode="HTML")
-        return
-
-    await state.update_data(edit_params_patch={"_price_min": text})
-    await message.answer(
-        "Введите максимальную цену в BYN:",
-        reply_markup=skip_keyboard(f"edit:skip_price_max:{alert_id}"),
-    )
-    await state.set_state(EditAlertStates.waiting_price_max)
-
-
-@router.callback_query(F.data.startswith("edit:skip_price_max:"))
-async def edit_skip_price_max(
-    callback: CallbackQuery, state: FSMContext, db: Database, kufar: KufarClient
-) -> None:
-    data = await state.get_data()
-    alert_id = data.get("edit_alert_id")
-    patch = data.get("edit_params_patch", {})
-
     alert = await db.get_alert(alert_id, callback.from_user.id)
     if not alert:
         await callback.answer("Подписка не найдена.", show_alert=True)
@@ -360,46 +335,37 @@ async def edit_skip_price_max(
         return
 
     params = dict(alert.params)
-    params.pop("_price_min", None)
-
-    if patch.get("_clear_price"):
-        params.pop("prc", None)
-    elif "_price_min" in patch:
-        params["prc"] = f"r:{patch['_price_min']},999999999"
-    else:
-        await callback.answer("Сначала укажите минимальную цену.", show_alert=True)
-        return
-
+    params.pop("prc", None)
     alert = await db.update_alert(alert_id, callback.from_user.id, params=params)
-    await callback.message.edit_text("✅ Цена обновлена.")
+    await callback.message.delete()
     await _finish_edit(callback.message, state, db, kufar, alert)
     await callback.answer()
 
 
-@router.message(EditAlertStates.waiting_price_max)
-async def edit_price_max(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+@router.message(EditAlertStates.waiting_price)
+async def edit_price(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+    cleaner = WizardCleaner(state)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
-    patch = data.get("edit_params_patch", {})
-    text = (message.text or "").strip()
 
     alert = await db.get_alert(alert_id, message.from_user.id)
     if not alert:
-        await message.answer("Подписка не найдена.")
+        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
         await state.clear()
         return
 
-    params = dict(alert.params)
-
-    if text == "-":
-        params.pop("prc", None)
-    elif text.isdigit():
-        price_min = patch.get("_price_min", "0")
-        params["prc"] = f"r:{price_min},{text}"
-    else:
-        await message.answer("Введите число (BYN) или <code>-</code> для удаления.", parse_mode="HTML")
+    try:
+        prc = parse_price_input(message.text or "")
+    except ValueError as exc:
+        await cleaner.send(message, str(exc), parse_mode="HTML", delete_user=True)
         return
 
-    params.pop("_price_min", None)
+    params = dict(alert.params)
+    if prc:
+        params["prc"] = prc
+    else:
+        params.pop("prc", None)
+
     alert = await db.update_alert(alert_id, message.from_user.id, params=params)
+    await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert)

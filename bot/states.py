@@ -7,8 +7,7 @@ class NewAlertStates(StatesGroup):
     waiting_query = State()
     waiting_category = State()
     waiting_region = State()
-    waiting_price_min = State()
-    waiting_price_max = State()
+    waiting_price = State()
     waiting_name = State()
     confirm = State()
 
@@ -19,5 +18,4 @@ class EditAlertStates(StatesGroup):
     waiting_url = State()
     waiting_category = State()
     waiting_region = State()
-    waiting_price_min = State()
-    waiting_price_max = State()
+    waiting_price = State()
