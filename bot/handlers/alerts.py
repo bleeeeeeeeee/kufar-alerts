@@ -7,7 +7,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.database import Database, format_alert_summary, parse_kufar_url
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
-from bot.kufar import KufarClient, REGIONS, build_search_url
+from bot.catalog import category_name
+from bot.kufar import KufarClient, build_search_url
+from bot.locations import format_location
+from bot.handlers.pickers import show_category_picker
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
 from bot.states import NewAlertStates
 from bot.utils.chat import WizardCleaner, track_message
@@ -44,12 +47,12 @@ async def _show_draft(message: Message, state: FSMContext, cleaner: WizardCleane
     if query:
         summary_parts.append(f"Запрос: <code>{query}</code>")
     if params.get("cat"):
-        summary_parts.append(f"📂 Категория: {params['cat']}")
-    if params.get("rgn"):
-        region_name = REGIONS.get(int(params["rgn"]), params["rgn"])
-        summary_parts.append(f"📍 Регион: {region_name}")
+        summary_parts.append(f"📂 {category_name(params['cat'])}")
+    location = format_location(params)
+    if location:
+        summary_parts.append(f"📍 {location}")
     if params.get("prc"):
-        summary_parts.append(f"💰 Цена: {format_price_display(params['prc'])}")
+        summary_parts.append(f"💰 {format_price_display(params['prc'])}")
 
     url = build_search_url(query, **{k: v for k, v in params.items() if not k.startswith("_")})
     summary_parts.append(f'\n🔗 <a href="{url}">Открыть поиск</a>')
@@ -100,7 +103,7 @@ async def new_via_url(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "new:manual", NewAlertStates.waiting_method)
 async def new_manual(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(query="", params={})
+    await state.update_data(query="", params={}, flow="new")
     await callback.message.edit_text(
         "Введите поисковый запрос (слова в названии).\n"
         "Или нажмите «Пропустить», если нужны только фильтры.",
@@ -125,96 +128,19 @@ async def process_url(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "new:skip_query", NewAlertStates.waiting_query)
-async def skip_query(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text(
-        "Введите ID категории (например 17010 — телефоны).\n"
-        "ID можно взять из URL на kufar.by (параметр cat).",
-        reply_markup=skip_keyboard("new:skip_cat"),
-    )
-    await state.set_state(NewAlertStates.waiting_category)
+async def skip_query(callback: CallbackQuery, state: FSMContext, kufar: KufarClient) -> None:
+    await state.update_data(flow="new")
+    await show_category_picker(callback, state, kufar)
     await callback.answer()
 
 
 @router.message(NewAlertStates.waiting_query)
-async def process_query(message: Message, state: FSMContext) -> None:
+async def process_query(message: Message, state: FSMContext, kufar: KufarClient) -> None:
     cleaner = WizardCleaner(state)
     query = (message.text or "").strip()
-    await state.update_data(query=query)
-    await cleaner.send(
-        message,
-        "Введите ID категории (например 17010) или пропустите.",
-        reply_markup=skip_keyboard("new:skip_cat"),
-        delete_user=True,
-    )
-    await state.set_state(NewAlertStates.waiting_category)
-
-
-@router.callback_query(F.data == "new:skip_cat", NewAlertStates.waiting_category)
-async def skip_cat(callback: CallbackQuery, state: FSMContext) -> None:
-    regions_text = "\n".join(f"{k} — {v}" for k, v in REGIONS.items())
-    await callback.message.edit_text(
-        f"Введите ID региона или пропустите:\n\n{regions_text}",
-        reply_markup=skip_keyboard("new:skip_region"),
-    )
-    await state.set_state(NewAlertStates.waiting_region)
-    await callback.answer()
-
-
-@router.message(NewAlertStates.waiting_category)
-async def process_category(message: Message, state: FSMContext) -> None:
-    cleaner = WizardCleaner(state)
-    cat = (message.text or "").strip()
-    if not cat.isdigit():
-        await cleaner.send(message, "Введите числовой ID категории или пропустите.", delete_user=True)
-        return
-
-    data = await state.get_data()
-    params = data.get("params", {})
-    params["cat"] = cat
-    await state.update_data(params=params)
-
-    regions_text = "\n".join(f"{k} — {v}" for k, v in REGIONS.items())
-    await cleaner.send(
-        message,
-        f"Введите ID региона или пропустите:\n\n{regions_text}",
-        reply_markup=skip_keyboard("new:skip_region"),
-        delete_user=True,
-    )
-    await state.set_state(NewAlertStates.waiting_region)
-
-
-@router.callback_query(F.data == "new:skip_region", NewAlertStates.waiting_region)
-async def skip_region(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text(
-        PRICE_INPUT_HINT,
-        parse_mode="HTML",
-        reply_markup=skip_keyboard("new:skip_price"),
-    )
-    await state.set_state(NewAlertStates.waiting_price)
-    await callback.answer()
-
-
-@router.message(NewAlertStates.waiting_region)
-async def process_region(message: Message, state: FSMContext) -> None:
-    cleaner = WizardCleaner(state)
-    region = (message.text or "").strip()
-    if not region.isdigit():
-        await cleaner.send(message, "Введите числовой ID региона или пропустите.", delete_user=True)
-        return
-
-    data = await state.get_data()
-    params = data.get("params", {})
-    params["rgn"] = region
-    await state.update_data(params=params)
-
-    await cleaner.send(
-        message,
-        PRICE_INPUT_HINT,
-        parse_mode="HTML",
-        reply_markup=skip_keyboard("new:skip_price"),
-        delete_user=True,
-    )
-    await state.set_state(NewAlertStates.waiting_price)
+    await state.update_data(query=query, flow="new")
+    await cleaner.delete_user(message)
+    await show_category_picker(message, state, kufar)
 
 
 @router.callback_query(F.data == "new:skip_price", NewAlertStates.waiting_price)

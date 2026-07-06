@@ -7,7 +7,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.database import Alert, Database, format_alert_summary, parse_kufar_url
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
-from bot.kufar import KufarClient, REGIONS, build_search_url
+from bot.handlers.pickers import show_category_picker, show_region_picker
+from bot.kufar import KufarClient, build_search_url
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
 from bot.states import EditAlertStates
 from bot.utils.chat import WizardCleaner, track_message
@@ -33,7 +34,7 @@ def edit_fields_keyboard(alert_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔎 Запрос", callback_data=f"edit:field:{alert_id}:query")],
             [InlineKeyboardButton(text="🔗 Ссылка Kufar", callback_data=f"edit:field:{alert_id}:url")],
             [InlineKeyboardButton(text="📂 Категория", callback_data=f"edit:field:{alert_id}:cat")],
-            [InlineKeyboardButton(text="📍 Регион", callback_data=f"edit:field:{alert_id}:rgn")],
+            [InlineKeyboardButton(text="📍 Место", callback_data=f"edit:field:{alert_id}:loc")],
             [InlineKeyboardButton(text="💰 Цена", callback_data=f"edit:field:{alert_id}:price")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="edit:back")],
         ]
@@ -147,7 +148,7 @@ async def edit_pick(callback: CallbackQuery, state: FSMContext, db: Database) ->
 
 
 @router.callback_query(F.data.startswith("edit:field:"))
-async def edit_field_pick(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def edit_field_pick(callback: CallbackQuery, state: FSMContext, db: Database, kufar: KufarClient) -> None:
     _, _, alert_id_str, field = callback.data.split(":", 3)
     alert_id = int(alert_id_str)
     alert = await db.get_alert(alert_id, callback.from_user.id)
@@ -180,22 +181,11 @@ async def edit_field_pick(callback: CallbackQuery, state: FSMContext, db: Databa
         )
         await state.set_state(EditAlertStates.waiting_url)
     elif field == "cat":
-        current = alert.params.get("cat", "—")
-        await callback.message.edit_text(
-            f"Текущая категория: <code>{current}</code>\n\n"
-            f"Введите ID категории (например 17010):{CLEAR_HINT}",
-            parse_mode="HTML",
-        )
-        await state.set_state(EditAlertStates.waiting_category)
-    elif field == "rgn":
-        current = alert.params.get("rgn", "—")
-        regions_text = "\n".join(f"{k} — {v}" for k, v in REGIONS.items())
-        await callback.message.edit_text(
-            f"Текущий регион: <code>{current}</code>\n\n"
-            f"{regions_text}\n\nВведите ID региона:{CLEAR_HINT}",
-            parse_mode="HTML",
-        )
-        await state.set_state(EditAlertStates.waiting_region)
+        await state.update_data(flow="edit", params=dict(alert.params))
+        await show_category_picker(callback, state, kufar)
+    elif field == "loc":
+        await state.update_data(flow="edit", params=dict(alert.params))
+        await show_region_picker(callback)
     elif field == "price":
         current = format_price_display(alert.params.get("prc")) or "—"
         await callback.message.edit_text(
@@ -263,64 +253,6 @@ async def edit_url(message: Message, state: FSMContext, db: Database, kufar: Kuf
         await state.clear()
         return
 
-    await cleaner.delete_user(message)
-    await _finish_edit(message, state, db, kufar, alert)
-
-
-@router.message(EditAlertStates.waiting_category)
-async def edit_category(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
-    data = await state.get_data()
-    alert_id = data.get("edit_alert_id")
-    text = (message.text or "").strip()
-
-    alert = await db.get_alert(alert_id, message.from_user.id)
-    if not alert:
-        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
-        await state.clear()
-        return
-
-    params = dict(alert.params)
-    if text == "-":
-        params.pop("cat", None)
-    elif text.isdigit():
-        params["cat"] = text
-    else:
-        await cleaner.send(
-            message, "Введите числовой ID или <code>-</code> для удаления.", parse_mode="HTML", delete_user=True
-        )
-        return
-
-    alert = await db.update_alert(alert_id, message.from_user.id, params=params)
-    await cleaner.delete_user(message)
-    await _finish_edit(message, state, db, kufar, alert)
-
-
-@router.message(EditAlertStates.waiting_region)
-async def edit_region(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
-    data = await state.get_data()
-    alert_id = data.get("edit_alert_id")
-    text = (message.text or "").strip()
-
-    alert = await db.get_alert(alert_id, message.from_user.id)
-    if not alert:
-        await cleaner.send(message, "Подписка не найдена.", delete_user=True)
-        await state.clear()
-        return
-
-    params = dict(alert.params)
-    if text == "-":
-        params.pop("rgn", None)
-    elif text.isdigit():
-        params["rgn"] = text
-    else:
-        await cleaner.send(
-            message, "Введите числовой ID или <code>-</code> для удаления.", parse_mode="HTML", delete_user=True
-        )
-        return
-
-    alert = await db.update_alert(alert_id, message.from_user.id, params=params)
     await cleaner.delete_user(message)
     await _finish_edit(message, state, db, kufar, alert)
 

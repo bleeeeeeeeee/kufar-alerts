@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings
 from bot.database import Database
-from bot.handlers import alerts, edit, start
+from bot.handlers import alerts, edit, pickers, start
 from bot.kufar import KufarClient
 from bot.middleware import InjectMiddleware
 from bot.poller import AlertPoller
@@ -38,13 +38,14 @@ async def main() -> None:
 
     async with aiohttp.ClientSession() as session:
         kufar = KufarClient(session, search_size=settings.search_size)
-        await kufar.get_categories()
+        await kufar.load_category_tree()
 
         dp.update.middleware(InjectMiddleware(db, kufar))
 
         dp.include_router(start.router)
         dp.include_router(alerts.router)
         dp.include_router(edit.router)
+        dp.include_router(pickers.router)
 
         poller = AlertPoller(
             bot=bot,
