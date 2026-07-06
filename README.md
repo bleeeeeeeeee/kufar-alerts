@@ -9,7 +9,7 @@ Telegram-бот для оповещений о новых объявлениях
 - Уведомления с фото, ценой и ссылкой
 - Несколько подписок на пользователя
 - Пауза / возобновление / удаление
-- Работа 24/7 в Docker с автоперезапуском
+- Работа 24/7 в облаке (Koyeb / Railway)
 
 ## Быстрый старт
 
@@ -25,23 +25,45 @@ cp .env.example .env
 # Отредактируйте .env — вставьте BOT_TOKEN
 ```
 
-### 3. Запуск через Docker (рекомендуется)
+## Деплой 24/7 в облако (рекомендуется)
+
+Локальный Docker работает только пока включён ПК. Для круглосуточной работы — **Koyeb** или **Railway** (оба без привязки карты).
+
+### Koyeb — лучший вариант (бесплатно, без карты)
+
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com/bleeeeeeeeee/kufar-alerts&branch=main&name=kufar-alerts&service_type=worker)
+
+1. Нажмите кнопку выше (или откройте [app.koyeb.com](https://app.koyeb.com))
+2. Войдите через GitHub
+3. Добавьте переменную `BOT_TOKEN` = токен от @BotFather
+4. Deploy
+
+Подробнее: [deploy/KOYEB.md](deploy/KOYEB.md)
+
+### Railway — альтернатива (trial $5, без карты)
+
+1. [railway.app/new](https://railway.app/new) → Deploy from GitHub → `kufar-alerts`
+2. Variables → `BOT_TOKEN`
+3. Restart Policy → **Always**
+
+Подробнее: [deploy/RAILWAY.md](deploy/RAILWAY.md)
+
+### Локально (только для разработки)
 
 ```bash
-docker compose up -d --build
-docker compose logs -f
-```
-
-### 4. Локальный запуск (без Docker)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+cp .env.example .env   # вставьте BOT_TOKEN
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m bot.main
 ```
 
-## Команды бота
+Или Docker (нужен запущенный Docker Desktop):
+
+```bash
+docker compose up -d --build
+```
+
+## Деплой на VPS
 
 | Команда | Описание |
 |---------|----------|
@@ -81,46 +103,7 @@ python -m bot.main
 | `SEARCH_SIZE` | 30 | Сколько объявлений проверять за раз |
 | `DATABASE_PATH` | data/kufar_alerts.db | Путь к SQLite |
 
-## Деплой 24/7 в облако (рекомендуется)
-
-Локальный Docker работает только пока включён ваш ПК. Для круглосуточной работы — деплой в облако.
-
-### Fly.io (бесплатный тариф ~256 MB, Варшава)
-
-1. Зарегистрируйтесь на [fly.io](https://fly.io) (нужна карта для верификации, списаний на free tier обычно нет)
-2. Заполните `.env` с `BOT_TOKEN`
-3. Запустите:
-
-```bash
-chmod +x deploy/fly-deploy.sh
-./deploy/fly-deploy.sh
-```
-
-Скрипт сам установит `flyctl`, создаст приложение, volume для SQLite и задеплоит бота.
-
-Полезные команды:
-```bash
-fly logs -a kufar-alerts      # логи
-fly status -a kufar-alerts    # статус
-fly ssh console -a kufar-alerts  # консоль на сервере
-```
-
-### Render.com (альтернатива)
-
-1. Запушьте репо на GitHub
-2. [render.com](https://render.com) → New → Blueprint → подключите репо
-3. Укажите `BOT_TOKEN` в переменных окружения
-4. Render поднимет worker с диском для базы
-
-### Локальный Docker (только для тестов)
-
-```bash
-docker compose up -d --build
-```
-
-Требует запущенный Docker Desktop и включённый ПК.
-
-## Деплой на VPS
+## Команды бота
 
 ```bash
 git clone <repo> kufar-alerts && cd kufar-alerts
