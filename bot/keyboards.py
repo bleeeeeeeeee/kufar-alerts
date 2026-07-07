@@ -1,5 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from bot.navigation import home_row
+
 MAIN_MENU_BUTTONS = {
     "new": "➕ Новая подписка",
     "list": "📋 Мои подписки",
@@ -23,7 +25,24 @@ MAIN_MENU = ReplyKeyboardMarkup(
 )
 
 
-def skip_keyboard(callback: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⏭ Пропустить", callback_data=callback)]]
-    )
+def skip_keyboard(callback: str, *, with_home: bool = True) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data=callback)],
+    ]
+    if with_home:
+        rows.append(home_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def step_nav_keyboard(
+    skip_callback: str | None = None,
+    *,
+    extra_rows: list[list[InlineKeyboardButton]] | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if skip_callback:
+        rows.append([InlineKeyboardButton(text="⏭ Пропустить", callback_data=skip_callback)])
+    if extra_rows:
+        rows.extend(extra_rows)
+    rows.append(home_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows)

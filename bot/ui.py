@@ -9,6 +9,7 @@ from bot.catalog import category_name
 from bot.database import Alert
 from bot.kufar import build_search_url
 from bot.locations import format_location
+from bot.navigation import home_row
 from bot.search_filters import format_extra_filter_lines
 
 
@@ -118,6 +119,7 @@ def alerts_list_keyboard(alerts: list[Alert]) -> InlineKeyboardMarkup:
             )
         ])
     rows.append([InlineKeyboardButton(text="➕ Новая подписка", callback_data="alert:new")])
+    rows.append(home_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -144,6 +146,7 @@ def alert_detail_keyboard(alert: Alert) -> InlineKeyboardMarkup:
     rows.append([
         InlineKeyboardButton(text="◀️ К списку", callback_data="alert:list"),
     ])
+    rows.append(home_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -153,7 +156,8 @@ def alert_delete_confirm_keyboard(alert_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="❌ Да, удалить", callback_data=f"alert:delete_confirm:{alert_id}"),
                 InlineKeyboardButton(text="◀️ Отмена", callback_data=f"alert:view:{alert_id}"),
-            ]
+            ],
+            home_row(),
         ]
     )
 
@@ -164,6 +168,7 @@ def new_subscription_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔗 Ссылка с Kufar", callback_data="new:url")],
             [InlineKeyboardButton(text="✏️ Настроить вручную", callback_data="new:manual")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="new:cancel")],
+            home_row(),
         ]
     )
 
@@ -174,6 +179,7 @@ def confirm_subscription_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✅ Создать подписку", callback_data="new:confirm")],
             [InlineKeyboardButton(text="✏️ Изменить", callback_data="new:edit")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="new:cancel_confirm")],
+            home_row(),
         ]
     )
 
@@ -193,6 +199,7 @@ def draft_edit_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⚙️ Доп. фильтры", callback_data="new:edit:extra")],
             [InlineKeyboardButton(text="🔗 Ссылка Kufar", callback_data="new:edit:url")],
             [InlineKeyboardButton(text="◀️ К предпросмотру", callback_data="new:edit:back")],
+            home_row(),
         ]
     )
 
@@ -202,5 +209,6 @@ def cancel_confirm_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Вернуться к редактированию", callback_data="new:edit:back")],
             [InlineKeyboardButton(text="🗑 Да, отменить", callback_data="new:cancel")],
+            home_row(),
         ]
     )

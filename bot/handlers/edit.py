@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.database import Alert, Database, parse_kufar_url
 from bot.keyboards import MAIN_MENU, skip_keyboard
+from bot.navigation import home_row
 from bot.handlers.pickers import show_category_picker, show_extra_filters_picker, show_region_picker
 from bot.kufar import KufarClient, build_search_url
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
@@ -32,6 +33,7 @@ def edit_fields_keyboard(alert_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💰 Цена", callback_data=f"edit:field:{alert_id}:price")],
             [InlineKeyboardButton(text="⚙️ Доп. фильтры", callback_data=f"edit:field:{alert_id}:extra")],
             [InlineKeyboardButton(text="◀️ К подписке", callback_data=f"alert:view:{alert_id}")],
+            home_row(),
         ]
     )
 
@@ -145,7 +147,7 @@ async def edit_field_pick(callback: CallbackQuery, state: FSMContext, db: Databa
         await show_category_picker(callback, state, kufar)
     elif field == "loc":
         await state.update_data(flow="edit", params=dict(alert.params))
-        await show_region_picker(callback)
+        await show_region_picker(callback, state)
     elif field == "price":
         current = format_price_display(alert.params.get("prc")) or "—"
         await callback.message.edit_text(

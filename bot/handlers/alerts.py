@@ -7,7 +7,8 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.database import Database, parse_kufar_url
 from bot.handlers.pickers import show_category_picker, show_extra_filters_picker, show_region_picker
-from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
+from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard, step_nav_keyboard
+from bot.navigation import wizard_nav_keyboard, wizard_nav_rows
 from bot.kufar import KufarClient
 from bot.price import PRICE_INPUT_HINT, parse_price_input
 from bot.seeding import activate_alert_after_seed, seed_alert
@@ -152,38 +153,44 @@ async def new_edit_field(callback: CallbackQuery, state: FSMContext, kufar: Kufa
         return
 
     await state.update_data(return_to="confirm", flow="new")
-    cleaner = WizardCleaner(state, user)
+    data = await state.get_data()
 
     if field == "name":
         await callback.message.edit_text(
             "<b>📝 Название</b>\n\nВведите новое название подписки:",
             parse_mode="HTML",
+            reply_markup=wizard_nav_keyboard(data),
         )
         await state.set_state(NewAlertStates.waiting_name)
     elif field == "query":
         await callback.message.edit_text(
             "<b>🔎 Запрос</b>\n\nВведите поисковый запрос или <code>-</code> чтобы убрать.",
             parse_mode="HTML",
+            reply_markup=wizard_nav_keyboard(data),
         )
         await state.set_state(NewAlertStates.waiting_query)
     elif field == "url":
         await callback.message.edit_text(
             "<b>🔗 Ссылка</b>\n\nОтправьте новую ссылку поиска с kufar.by:",
             parse_mode="HTML",
+            reply_markup=wizard_nav_keyboard(data),
         )
         await state.set_state(NewAlertStates.waiting_url)
     elif field == "price":
         await callback.message.edit_text(
             f"<b>💰 Цена</b>\n\n{PRICE_INPUT_HINT}",
             parse_mode="HTML",
-            reply_markup=skip_keyboard("new:skip_price"),
+            reply_markup=step_nav_keyboard(
+                "new:skip_price",
+                extra_rows=wizard_nav_rows(data, include_home=False),
+            ),
         )
         await state.set_state(NewAlertStates.waiting_price)
     elif field == "cat":
         await callback.message.edit_text("<b>📂 Категория</b>", parse_mode="HTML")
         await show_category_picker(callback, state, kufar)
     elif field == "loc":
-        await show_region_picker(callback)
+        await show_region_picker(callback, state)
     elif field == "extra":
         await state.update_data(params=dict((await state.get_data()).get("params", {})))
         await show_extra_filters_picker(callback, state)
@@ -192,12 +199,15 @@ async def new_edit_field(callback: CallbackQuery, state: FSMContext, kufar: Kufa
 
 @router.callback_query(F.data == "new:url", NewAlertStates.waiting_method)
 async def new_via_url(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(flow="new")
+    data = await state.get_data()
     await callback.message.edit_text(
         "<b>Шаг 1/1 — Ссылка</b>\n\n"
         "Отправьте ссылку на страницу поиска с kufar.by.\n\n"
         "Пример:\n"
         "<code>https://www.kufar.by/l?query=iphone&rgn=1</code>",
         parse_mode="HTML",
+        reply_markup=wizard_nav_keyboard(data),
     )
     await state.set_state(NewAlertStates.waiting_url)
     await callback.answer()
@@ -206,12 +216,16 @@ async def new_via_url(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "new:manual", NewAlertStates.waiting_method)
 async def new_manual(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(query="", params={}, flow="new")
+    data = await state.get_data()
     await callback.message.edit_text(
         "<b>Шаг 1/6 — Поисковый запрос</b>\n\n"
         "Введите слова для поиска в названии объявления.\n"
         "Или нажмите «Пропустить», если нужны только фильтры.",
         parse_mode="HTML",
-        reply_markup=skip_keyboard("new:skip_query"),
+        reply_markup=step_nav_keyboard(
+            "new:skip_query",
+            extra_rows=wizard_nav_rows(data, include_home=False),
+        ),
     )
     await state.set_state(NewAlertStates.waiting_query)
     await callback.answer()

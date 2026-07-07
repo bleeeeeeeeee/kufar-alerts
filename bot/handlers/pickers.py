@@ -5,8 +5,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.database import Database
-from bot.keyboards import skip_keyboard
+from bot.keyboards import skip_keyboard, step_nav_keyboard
 from bot.kufar import KufarClient
+from bot.navigation import extend_keyboard, wizard_nav_rows
 from bot.pickers import (
     area_keyboard,
     area_title,
@@ -27,32 +28,37 @@ from bot.states import NewAlertStates
 router = Router()
 
 
+async def _keyboard_with_nav(keyboard, state: FSMContext):
+    data = await state.get_data()
+    return extend_keyboard(keyboard, wizard_nav_rows(data))
+
+
 async def show_category_picker(target: Message | CallbackQuery, state: FSMContext, kufar: KufarClient, parent_id: int | None = None) -> None:
     data = await state.get_data()
     step = ""
     if data.get("flow") == "new" and parent_id is None and data.get("return_to") != "confirm":
         step = "<b>Шаг 2/6 — Категория</b>\n\n"
     text = step + category_title(kufar, parent_id)
-    kb = category_keyboard(kufar, parent_id)
+    kb = await _keyboard_with_nav(category_keyboard(kufar, parent_id), state)
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
     else:
         await target.answer(text, reply_markup=kb)
 
 
-async def show_region_picker(target: Message | CallbackQuery) -> None:
+async def show_region_picker(target: Message | CallbackQuery, state: FSMContext) -> None:
     text = "<b>Шаг 3/6 — Место</b>\n\n📍 Выберите регион или «Вся Беларусь»"
-    kb = region_keyboard()
+    kb = await _keyboard_with_nav(region_keyboard(), state)
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
     else:
         await target.answer(text, reply_markup=kb)
 
 
-async def show_area_picker(callback: CallbackQuery, region_id: int, page: int = 0) -> None:
+async def show_area_picker(callback: CallbackQuery, region_id: int, state: FSMContext, page: int = 0) -> None:
     await callback.message.edit_text(
         area_title(region_id, page),
-        reply_markup=area_keyboard(region_id, page),
+        reply_markup=await _keyboard_with_nav(area_keyboard(region_id, page), state),
     )
 
 
@@ -86,7 +92,7 @@ async def show_extra_filters_picker(target: Message | CallbackQuery, state: FSMC
         f"{step}Уточните поиск. Можно выбрать несколько опций:\n\n"
         f"{extra_filters_summary(params)}"
     )
-    kb = extra_filters_keyboard(params)
+    kb = await _keyboard_with_nav(extra_filters_keyboard(params), state)
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     else:
@@ -95,18 +101,26 @@ async def show_extra_filters_picker(target: Message | CallbackQuery, state: FSMC
 
 async def _go_new_price(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewAlertStates.waiting_price)
+    data = await state.get_data()
     await callback.message.edit_text(
         "<b>Шаг 4/6 — Цена</b>\n\n" + PRICE_INPUT_HINT,
         parse_mode="HTML",
-        reply_markup=skip_keyboard("new:skip_price"),
+        reply_markup=step_nav_keyboard(
+            "new:skip_price",
+            extra_rows=wizard_nav_rows(data, include_home=False),
+        ),
     )
 
 
 async def _go_new_name(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewAlertStates.waiting_name)
+    data = await state.get_data()
+    from bot.navigation import wizard_nav_keyboard
+
     await callback.message.edit_text(
         "<b>Шаг 6/6 — Название</b>\n\nКак назвать подписку? (для удобства в списке)",
         parse_mode="HTML",
+        reply_markup=wizard_nav_keyboard(data),
     )
 
 
@@ -150,7 +164,7 @@ async def pick_category(
         elif await _return_to_draft_if_needed(callback, state, user):
             pass
         else:
-            await show_region_picker(callback)
+            await show_region_picker(callback, state)
         await callback.answer()
         return
 
@@ -174,7 +188,7 @@ async def pick_category(
         elif await _return_to_draft_if_needed(callback, state, user):
             pass
         else:
-            await show_region_picker(callback)
+            await show_region_picker(callback, state)
         await callback.answer()
         return
 
@@ -212,21 +226,21 @@ async def pick_location(
         return
 
     if action == "b":
-        await show_region_picker(callback)
+        await show_region_picker(callback, state)
         await callback.answer()
         return
 
     if action == "r":
         region_id = int(parts[3])
         await state.update_data(pick_rgn=region_id)
-        await show_area_picker(callback, region_id, 0)
+        await show_area_picker(callback, region_id, state, 0)
         await callback.answer()
         return
 
     if action == "p":
         region_id = int(parts[3])
         page = int(parts[4])
-        await show_area_picker(callback, region_id, page)
+        await show_area_picker(callback, region_id, state, page)
         await callback.answer()
         return
 
@@ -337,10 +351,11 @@ async def pick_extra_filters(
     if action == "m" and len(parts) >= 3:
         key = parts[2]
         if key in CHOICE_FILTERS:
+            data = await state.get_data()
             await callback.message.edit_text(
                 f"<b>{CHOICE_FILTERS[key]['label']}</b>\n\nВыберите значение:",
                 parse_mode="HTML",
-                reply_markup=choice_filter_keyboard(key, params),
+                reply_markup=await _keyboard_with_nav(choice_filter_keyboard(key, params), state),
             )
         await callback.answer()
         return

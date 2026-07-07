@@ -1,13 +1,14 @@
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from bot.config import Settings
 from bot.database import Database
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
+from bot.navigation import format_home_text, home_row
 from bot.users import User
-from bot.utils.chat import send_menu_message, track_message
+from bot.utils.chat import WizardCleaner, send_menu_message, track_message
 
 router = Router()
 
@@ -64,24 +65,46 @@ async def cmd_start(
     alerts = await db.get_user_alerts(message.from_user.id)
     active = sum(1 for a in alerts if a.active)
 
-    if alerts:
-        status = f"\n\n📋 У вас <b>{len(alerts)}</b> подписок ({active} активных)."
-        hint = "Откройте <b>📋 Мои подписки</b> для управления."
-    else:
-        status = ""
-        hint = "Нажмите <b>➕ Новая подписка</b>, чтобы начать."
-
     sent = await send_menu_message(
         message,
         user,
-        "👋 <b>Kufar Alerts</b>\n\n"
-        f"Привет, <b>{user.display_name}</b>!\n"
-        "Присылаю уведомления о новых объявлениях на Kufar."
-        f"{status}\n\n{hint}",
+        format_home_text(user.display_name, len(alerts), active),
         state,
         parse_mode="HTML",
         reply_markup=MAIN_MENU,
     )
+
+
+@router.callback_query(F.data == "nav:home")
+async def nav_home(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    user: User | None,
+) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    cleaner = WizardCleaner(state, user)
+    await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id, callback.from_user.id)
+    await state.clear()
+
+    alerts = await db.get_user_alerts(callback.from_user.id)
+    active = sum(1 for a in alerts if a.active)
+    text = format_home_text(user.display_name, len(alerts), active)
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+    sent = await callback.message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU)
+    await track_message(callback.from_user.id, sent.message_id)
+    await callback.answer()
 
 
 @router.message(Command("help"))
@@ -98,6 +121,7 @@ async def cmd_help(message: Message, user: User | None, state) -> None:
         state,
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[home_row()]),
     )
 
 

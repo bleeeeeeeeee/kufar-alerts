@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.config import Settings
 from bot.database import Database
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
+from bot.navigation import home_row
 from bot.states import SettingsStates
 from bot.users import DISPLAY_FIELD_ICONS, DISPLAY_FIELD_LABELS, User
 from bot.utils.chat import send_menu_message, track_message
@@ -31,6 +32,7 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
     ]
     if user.is_admin:
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")])
+    rows.append(home_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
