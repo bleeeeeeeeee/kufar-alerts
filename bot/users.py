@@ -4,11 +4,62 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+DISPLAY_FIELD_LABELS: dict[str, str] = {
+    "price": "Цена",
+    "location": "Место",
+    "category": "Категория",
+    "condition": "Состояние",
+    "delivery": "Доставка",
+    "seller": "Продавец",
+    "posted_at": "Дата публикации",
+    "details": "Характеристики",
+}
+
+DISPLAY_FIELD_ICONS: dict[str, str] = {
+    "price": "💰",
+    "location": "📍",
+    "category": "📂",
+    "condition": "✨",
+    "delivery": "📦",
+    "seller": "👤",
+    "posted_at": "🕐",
+    "details": "📋",
+}
+
+
+@dataclass
+class NotificationDisplay:
+    price: bool = True
+    location: bool = True
+    category: bool = True
+    condition: bool = True
+    delivery: bool = True
+    seller: bool = True
+    posted_at: bool = True
+    details: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> NotificationDisplay:
+        if not data:
+            return cls()
+        defaults = cls()
+        return cls(
+            **{
+                key: bool(data.get(key, getattr(defaults, key)))
+                for key in DISPLAY_FIELD_LABELS
+            }
+        )
+
+    def to_dict(self) -> dict[str, bool]:
+        return {key: bool(getattr(self, key)) for key in DISPLAY_FIELD_LABELS}
+
+
 @dataclass
 class UserSettings:
     photos_enabled: bool = True
     auto_clear_chat: bool = True
     notification_topic_id: int | None = None
+    notification_display: NotificationDisplay = field(default_factory=NotificationDisplay)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> UserSettings:
@@ -19,12 +70,14 @@ class UserSettings:
             photos_enabled=bool(data.get("photos_enabled", True)),
             auto_clear_chat=bool(data.get("auto_clear_chat", True)),
             notification_topic_id=int(topic_id) if topic_id else None,
+            notification_display=NotificationDisplay.from_dict(data.get("notification_display")),
         )
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "photos_enabled": self.photos_enabled,
             "auto_clear_chat": self.auto_clear_chat,
+            "notification_display": self.notification_display.to_dict(),
         }
         if self.notification_topic_id is not None:
             data["notification_topic_id"] = self.notification_topic_id

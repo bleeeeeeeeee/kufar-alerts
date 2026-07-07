@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.database import Database, parse_kufar_url
-from bot.handlers.pickers import show_category_picker
+from bot.handlers.pickers import show_category_picker, show_extra_filters_picker, show_region_picker
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
 from bot.kufar import KufarClient
 from bot.price import PRICE_INPUT_HINT, parse_price_input
@@ -184,6 +184,9 @@ async def new_edit_field(callback: CallbackQuery, state: FSMContext, kufar: Kufa
         await show_category_picker(callback, state, kufar)
     elif field == "loc":
         await show_region_picker(callback)
+    elif field == "extra":
+        await state.update_data(params=dict((await state.get_data()).get("params", {})))
+        await show_extra_filters_picker(callback, state)
     await callback.answer()
 
 
@@ -204,7 +207,7 @@ async def new_via_url(callback: CallbackQuery, state: FSMContext) -> None:
 async def new_manual(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(query="", params={}, flow="new")
     await callback.message.edit_text(
-        "<b>Шаг 1/5 — Поисковый запрос</b>\n\n"
+        "<b>Шаг 1/6 — Поисковый запрос</b>\n\n"
         "Введите слова для поиска в названии объявления.\n"
         "Или нажмите «Пропустить», если нужны только фильтры.",
         parse_mode="HTML",
@@ -235,7 +238,7 @@ async def process_url(message: Message, state: FSMContext, user: User | None) ->
 @router.callback_query(F.data == "new:skip_query", NewAlertStates.waiting_query)
 async def skip_query(callback: CallbackQuery, state: FSMContext, kufar: KufarClient) -> None:
     await state.update_data(flow="new")
-    await callback.message.edit_text("<b>Шаг 2/5 — Категория</b>", parse_mode="HTML")
+    await callback.message.edit_text("<b>Шаг 2/6 — Категория</b>", parse_mode="HTML")
     await show_category_picker(callback, state, kufar)
     await callback.answer()
 
@@ -254,7 +257,7 @@ async def process_query(message: Message, state: FSMContext, kufar: KufarClient,
         return
 
     await cleaner.delete_user(message)
-    sent = await message.answer("<b>Шаг 2/5 — Категория</b>", parse_mode="HTML")
+    sent = await message.answer("<b>Шаг 2/6 — Категория</b>", parse_mode="HTML")
     await track_message(message.from_user.id, sent.message_id)
     await show_category_picker(message, state, kufar)
 
@@ -272,11 +275,7 @@ async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | No
         await callback.answer()
         return
 
-    await callback.message.edit_text(
-        "<b>Шаг 5/5 — Название</b>\n\nКак назвать подписку? (для удобства в списке)",
-        parse_mode="HTML",
-    )
-    await state.set_state(NewAlertStates.waiting_name)
+    await show_extra_filters_picker(callback, state)
     await callback.answer()
 
 
@@ -303,13 +302,8 @@ async def process_price(message: Message, state: FSMContext, user: User | None) 
         await _show_draft(message, state, cleaner)
         return
 
-    await cleaner.send(
-        message,
-        "<b>Шаг 5/5 — Название</b>\n\nКак назвать подписку?",
-        parse_mode="HTML",
-        delete_user=True,
-    )
-    await state.set_state(NewAlertStates.waiting_name)
+    await cleaner.delete_user(message)
+    await show_extra_filters_picker(message, state)
 
 
 @router.message(NewAlertStates.waiting_name)

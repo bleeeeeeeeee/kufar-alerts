@@ -450,6 +450,11 @@ class Database:
         if not user:
             return None
         merged = {**user.settings.to_dict(), **settings}
+        if isinstance(settings.get("notification_display"), dict):
+            merged["notification_display"] = {
+                **user.settings.notification_display.to_dict(),
+                **settings["notification_display"],
+            }
         for key, value in list(merged.items()):
             if value is None:
                 merged.pop(key, None)

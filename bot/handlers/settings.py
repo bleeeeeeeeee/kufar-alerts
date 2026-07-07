@@ -9,7 +9,7 @@ from bot.config import Settings
 from bot.database import Database
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
 from bot.states import SettingsStates
-from bot.users import User
+from bot.users import DISPLAY_FIELD_ICONS, DISPLAY_FIELD_LABELS, User
 from bot.utils.chat import send_menu_message, track_message
 
 router = Router()
@@ -26,11 +26,40 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=photos_label, callback_data="settings:toggle_photos")],
         [InlineKeyboardButton(text=clear_label, callback_data="settings:toggle_clear")],
+        [InlineKeyboardButton(text="🧾 Поля уведомления", callback_data="settings:display_menu")],
         [InlineKeyboardButton(text=topic_label, callback_data="settings:topic_menu")],
     ]
     if user.is_admin:
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def display_menu_keyboard(user: User) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    display = user.settings.notification_display
+    for key in DISPLAY_FIELD_LABELS:
+        enabled = getattr(display, key)
+        mark = "✅" if enabled else "⬜️"
+        icon = DISPLAY_FIELD_ICONS.get(key, "•")
+        label = DISPLAY_FIELD_LABELS[key]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark} {icon} {label}",
+                    callback_data=f"settings:display_toggle:{key}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="settings:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def format_display_menu_text() -> str:
+    return (
+        "<b>🧾 Поля в уведомлениях</b>\n\n"
+        "Выберите, что показывать в сообщениях о новых объявлениях.\n"
+        "Название и ссылка отображаются всегда."
+    )
 
 
 def topic_menu_keyboard(user: User) -> InlineKeyboardMarkup:
@@ -129,6 +158,50 @@ async def settings_back(callback: CallbackQuery, user: User | None, db: Database
         reply_markup=settings_keyboard(user),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "settings:display_menu")
+async def display_menu(callback: CallbackQuery, user: User | None) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text(
+        format_display_menu_text(),
+        parse_mode="HTML",
+        reply_markup=display_menu_keyboard(user),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("settings:display_toggle:"))
+async def display_toggle(
+    callback: CallbackQuery,
+    user: User | None,
+    db: Database,
+) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    field = callback.data.split(":")[-1]
+    if field not in DISPLAY_FIELD_LABELS:
+        await callback.answer("Неизвестное поле", show_alert=True)
+        return
+
+    current = user.settings.notification_display.to_dict()
+    current[field] = not current[field]
+    updated = await db.update_user_settings(user.user_id, {"notification_display": current})
+    if not updated:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        format_display_menu_text(),
+        parse_mode="HTML",
+        reply_markup=display_menu_keyboard(updated),
+    )
+    state_label = "включено" if current[field] else "выключено"
+    await callback.answer(f"{DISPLAY_FIELD_LABELS[field]}: {state_label}")
 
 
 @router.callback_query(F.data == "settings:topic_menu")

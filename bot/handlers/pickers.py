@@ -14,6 +14,13 @@ from bot.pickers import (
     category_title,
     region_keyboard,
 )
+from bot.search_filters import (
+    CHOICE_FILTERS,
+    TOGGLE_FILTERS,
+    choice_filter_keyboard,
+    extra_filters_keyboard,
+    extra_filters_summary,
+)
 from bot.price import PRICE_INPUT_HINT
 from bot.states import NewAlertStates
 
@@ -23,8 +30,8 @@ router = Router()
 async def show_category_picker(target: Message | CallbackQuery, state: FSMContext, kufar: KufarClient, parent_id: int | None = None) -> None:
     data = await state.get_data()
     step = ""
-    if data.get("flow") == "new" and parent_id is None:
-        step = "<b>Шаг 2/5 — Категория</b>\n\n"
+    if data.get("flow") == "new" and parent_id is None and data.get("return_to") != "confirm":
+        step = "<b>Шаг 2/6 — Категория</b>\n\n"
     text = step + category_title(kufar, parent_id)
     kb = category_keyboard(kufar, parent_id)
     if isinstance(target, CallbackQuery):
@@ -34,7 +41,7 @@ async def show_category_picker(target: Message | CallbackQuery, state: FSMContex
 
 
 async def show_region_picker(target: Message | CallbackQuery) -> None:
-    text = "<b>Шаг 3/5 — Место</b>\n\n📍 Выберите регион или «Вся Беларусь»"
+    text = "<b>Шаг 3/6 — Место</b>\n\n📍 Выберите регион или «Вся Беларусь»"
     kb = region_keyboard()
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
@@ -69,12 +76,37 @@ async def _finish_edit_location(
     await _finish_edit(callback.message, state, db, kufar, alert)
 
 
+async def show_extra_filters_picker(target: Message | CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    params = dict(data.get("params", {}))
+    step = ""
+    if data.get("flow") == "new" and data.get("return_to") != "confirm":
+        step = "<b>Шаг 5/6 — Доп. фильтры</b>\n\n"
+    text = (
+        f"{step}Уточните поиск. Можно выбрать несколько опций:\n\n"
+        f"{extra_filters_summary(params)}"
+    )
+    kb = extra_filters_keyboard(params)
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def _go_new_price(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewAlertStates.waiting_price)
     await callback.message.edit_text(
-        "<b>Шаг 4/5 — Цена</b>\n\n" + PRICE_INPUT_HINT,
+        "<b>Шаг 4/6 — Цена</b>\n\n" + PRICE_INPUT_HINT,
         parse_mode="HTML",
         reply_markup=skip_keyboard("new:skip_price"),
+    )
+
+
+async def _go_new_name(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(NewAlertStates.waiting_name)
+    await callback.message.edit_text(
+        "<b>Шаг 6/6 — Название</b>\n\nКак назвать подписку? (для удобства в списке)",
+        parse_mode="HTML",
     )
 
 
@@ -230,6 +262,99 @@ async def pick_location(
             pass
         else:
             await _go_new_price(callback, state)
+        await callback.answer()
+        return
+
+    await callback.answer()
+
+
+async def _finish_extra_filters(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    kufar: KufarClient,
+    params: dict,
+    user=None,
+) -> None:
+    data = await state.get_data()
+    flow = data.get("flow", "new")
+    await state.update_data(params=params)
+
+    if flow == "edit":
+        alert_id = data.get("edit_alert_id")
+        alert = await db.update_alert(alert_id, callback.from_user.id, params=params)
+        if not alert:
+            await callback.answer("Подписка не найдена.", show_alert=True)
+            await state.clear()
+            return
+        from bot.handlers.edit import _finish_edit
+
+        await callback.message.delete()
+        await _finish_edit(callback.message, state, db, kufar, alert)
+        return
+
+    if await _return_to_draft_if_needed(callback, state, user):
+        return
+
+    await _go_new_name(callback, state)
+
+
+@router.callback_query(F.data.startswith("xf:"))
+async def pick_extra_filters(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    kufar: KufarClient,
+    user=None,
+) -> None:
+    parts = callback.data.split(":")
+    action = parts[1]
+    data = await state.get_data()
+    params = dict(data.get("params", {}))
+
+    if action in {"done", "skip"}:
+        await _finish_extra_filters(callback, state, db, kufar, params, user)
+        await callback.answer()
+        return
+
+    if action == "back":
+        await show_extra_filters_picker(callback, state)
+        await callback.answer()
+        return
+
+    if action == "t" and len(parts) >= 3:
+        key = parts[2]
+        if key in TOGGLE_FILTERS:
+            if params.get(key) == "1":
+                params.pop(key, None)
+            else:
+                params[key] = "1"
+            await state.update_data(params=params)
+            await show_extra_filters_picker(callback, state)
+        await callback.answer()
+        return
+
+    if action == "m" and len(parts) >= 3:
+        key = parts[2]
+        if key in CHOICE_FILTERS:
+            await callback.message.edit_text(
+                f"<b>{CHOICE_FILTERS[key]['label']}</b>\n\nВыберите значение:",
+                parse_mode="HTML",
+                reply_markup=choice_filter_keyboard(key, params),
+            )
+        await callback.answer()
+        return
+
+    if action == "c" and len(parts) >= 4:
+        key = parts[2]
+        value = parts[3]
+        if key in CHOICE_FILTERS:
+            if value == "_":
+                params.pop(key, None)
+            else:
+                params[key] = value
+            await state.update_data(params=params)
+            await show_extra_filters_picker(callback, state)
         await callback.answer()
         return
 

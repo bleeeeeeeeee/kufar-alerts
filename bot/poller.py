@@ -7,10 +7,11 @@ import logging
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 
+from bot.ad_display import format_ad_message
 from bot.database import Alert, Database
-from bot.kufar import KufarClient, format_ad_message, get_image_urls
 from bot.notifier import send_ad_notification
 from bot.time_utils import is_ad_after_alert_created
+from bot.kufar import KufarClient, get_image_urls
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +120,9 @@ class AlertPoller:
         return len(new_ads), len(notified_ids)
 
     async def _notify(self, alert: Alert, ad: dict) -> bool:
-        text = (
-            f"🆕 <b>Новое объявление</b>\n"
-            f"📌 <i>{html.escape(alert.name)}</i>\n\n"
-            f"{format_ad_message(ad, self.kufar)}"
-        )
         image_urls = get_image_urls(ad)
         db_user = await self.db.get_user(alert.user_id)
+        display = db_user.settings.notification_display if db_user else None
         if db_user and not db_user.settings.photos_enabled:
             image_urls = []
 
@@ -133,7 +130,11 @@ class AlertPoller:
             error = await send_ad_notification(
                 self.bot,
                 alert.user_id,
-                text,
+                (
+                    f"🆕 <b>Новое объявление</b>\n"
+                    f"📌 <i>{html.escape(alert.name)}</i>\n\n"
+                    f"{format_ad_message(ad, display=display)}"
+                ),
                 image_urls,
                 self.kufar.download_image,
                 message_thread_id=db_user.settings.notification_topic_id if db_user else None,

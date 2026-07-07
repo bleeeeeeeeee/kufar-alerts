@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import logging
 from typing import Any
 from urllib.parse import urlencode
@@ -171,25 +170,6 @@ def get_param_value(ad: dict[str, Any], param_name: str) -> str:
         if param.get("p") == param_name:
             return str(param.get("vl") or "")
     return ""
-
-
-def format_ad_message(ad: dict[str, Any], kufar: KufarClient) -> str:
-    subject = html.escape(ad.get("subject") or "Без названия")
-    price = html.escape(format_price(ad))
-    link = ad.get("ad_link") or f"https://www.kufar.by/item/{ad.get('ad_id')}"
-    region = html.escape(get_param_value(ad, "region") or get_param_value(ad, "area"))
-    category = html.escape(get_param_value(ad, "category"))
-
-    lines = [
-        f"<b>{subject}</b>",
-        f"💰 {price}",
-    ]
-    if region:
-        lines.append(f"📍 {region}")
-    if category:
-        lines.append(f"📂 {category}")
-    lines.append(f'🔗 <a href="{link}">Открыть на Kufar</a>')
-    return "\n".join(lines)
 
 
 def build_search_url(query: str = "", **params: str) -> str:

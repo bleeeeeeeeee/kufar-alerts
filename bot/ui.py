@@ -9,6 +9,7 @@ from bot.catalog import category_name
 from bot.database import Alert
 from bot.kufar import build_search_url
 from bot.locations import format_location
+from bot.search_filters import format_extra_filter_lines
 
 
 def format_filters(query: str, params: dict[str, Any]) -> list[str]:
@@ -38,6 +39,12 @@ def format_filters(query: str, params: dict[str, Any]) -> list[str]:
         lines.append(f"💰 {html.escape(format_price_display(prc))}")
     else:
         lines.append("💰 <i>любая цена</i>")
+
+    extra = format_extra_filter_lines(params)
+    if extra:
+        lines.extend(extra)
+    else:
+        lines.append("⚙️ <i>без доп. фильтров</i>")
 
     return lines
 
@@ -183,6 +190,7 @@ def draft_edit_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📍 Место", callback_data="new:edit:loc"),
             ],
             [InlineKeyboardButton(text="💰 Цена", callback_data="new:edit:price")],
+            [InlineKeyboardButton(text="⚙️ Доп. фильтры", callback_data="new:edit:extra")],
             [InlineKeyboardButton(text="🔗 Ссылка Kufar", callback_data="new:edit:url")],
             [InlineKeyboardButton(text="◀️ К предпросмотру", callback_data="new:edit:back")],
         ]
