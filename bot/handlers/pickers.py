@@ -34,7 +34,7 @@ async def show_category_picker(target: Message | CallbackQuery, state: FSMContex
 
 
 async def show_region_picker(target: Message | CallbackQuery) -> None:
-    text = "<b>Шаг 3/5 — Место</b>\n\n📍 Выберите регион"
+    text = "<b>Шаг 3/5 — Место</b>\n\n📍 Выберите регион или «Вся Беларусь»"
     kb = region_keyboard()
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)

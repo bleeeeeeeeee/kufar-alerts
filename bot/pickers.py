@@ -61,7 +61,7 @@ def region_keyboard() -> InlineKeyboardMarkup:
     ]
     for row in _chunk(buttons, 2):
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⏭ Пропустить", callback_data="pick:lo:sk")])
+    rows.append([InlineKeyboardButton(text="🇧🇾 Вся Беларусь", callback_data="pick:lo:sk")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
