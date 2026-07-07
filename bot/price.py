@@ -11,6 +11,23 @@ def format_byn(amount: int | str) -> str:
     return f"{int(amount):,}".replace(",", " ")
 
 
+def format_listing_price_byn(price_byn: int | str | None) -> str:
+    """Format listing price from Kufar API (stored in kopecks)."""
+    if price_byn in (None, "", "0"):
+        return "Договорная"
+    try:
+        cents = int(price_byn)
+    except (TypeError, ValueError):
+        return f"{price_byn} BYN"
+    if cents <= 0:
+        return "Договорная"
+    whole = cents // 100
+    remainder = cents % 100
+    if remainder:
+        return f"{format_byn(whole)},{remainder:02d} BYN"
+    return f"{format_byn(whole)} BYN"
+
+
 def parse_prc(prc: str | None) -> tuple[int | None, int | None]:
     """Parse prc into (min_byn, max_byn). None means unbounded."""
     if not prc or not prc.startswith("r:"):

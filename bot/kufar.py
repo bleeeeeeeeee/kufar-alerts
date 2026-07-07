@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import aiohttp
 
 from bot.catalog import set_category_names
-from bot.price import prc_for_website
+from bot.price import format_listing_price_byn, prc_for_website
 
 logger = logging.getLogger(__name__)
 
@@ -163,14 +163,7 @@ def get_image_urls(ad: dict[str, Any]) -> list[str]:
 
 
 def format_price(ad: dict[str, Any]) -> str:
-    price = ad.get("price_byn")
-    if price in (None, "", "0"):
-        return "Договорная"
-    try:
-        value = int(price)
-        return f"{value:,}".replace(",", " ") + " BYN"
-    except (TypeError, ValueError):
-        return f"{price} BYN"
+    return format_listing_price_byn(ad.get("price_byn"))
 
 
 def get_param_value(ad: dict[str, Any], param_name: str) -> str:
