@@ -17,6 +17,7 @@ from bot.handlers import admin, alerts, edit, pickers, settings as settings_hand
 from bot.kufar import KufarClient
 from bot.middleware import AccessMiddleware, DedupMiddleware, InjectMiddleware
 from bot.poller import AlertPoller
+from bot.topics import bot_topics_enabled
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +66,14 @@ async def main() -> None:
             interval=app_settings.poll_interval,
         )
         poller.start()
+
+        if await bot_topics_enabled(bot):
+            logger.info("Bot private-chat topics are enabled")
+        else:
+            logger.warning(
+                "Bot private-chat topics are disabled — enable Topics in @BotFather "
+                "for notification topics to work"
+            )
 
         logger.info("Bot started")
         await bot.delete_webhook(drop_pending_updates=True)
