@@ -78,8 +78,30 @@ async def _go_new_price(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
+async def _return_to_draft_if_needed(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user,
+) -> bool:
+    data = await state.get_data()
+    if data.get("return_to") != "confirm":
+        return False
+    from bot.handlers.alerts import _show_draft_callback
+    from bot.utils.chat import WizardCleaner
+
+    cleaner = WizardCleaner(state, user)
+    await _show_draft_callback(callback, state, cleaner)
+    return True
+
+
 @router.callback_query(F.data.startswith("pick:ca:"))
-async def pick_category(callback: CallbackQuery, state: FSMContext, kufar: KufarClient, db: Database) -> None:
+async def pick_category(
+    callback: CallbackQuery,
+    state: FSMContext,
+    kufar: KufarClient,
+    db: Database,
+    user=None,
+) -> None:
     action = callback.data.split(":", 2)[2]
     data = await state.get_data()
     flow = data.get("flow", "new")
@@ -93,6 +115,8 @@ async def pick_category(callback: CallbackQuery, state: FSMContext, kufar: Kufar
             from bot.handlers.edit import _finish_edit
             await callback.message.delete()
             await _finish_edit(callback.message, state, db, kufar, alert)
+        elif await _return_to_draft_if_needed(callback, state, user):
+            pass
         else:
             await show_region_picker(callback)
         await callback.answer()
@@ -115,6 +139,8 @@ async def pick_category(callback: CallbackQuery, state: FSMContext, kufar: Kufar
             from bot.handlers.edit import _finish_edit
             await callback.message.delete()
             await _finish_edit(callback.message, state, db, kufar, alert)
+        elif await _return_to_draft_if_needed(callback, state, user):
+            pass
         else:
             await show_region_picker(callback)
         await callback.answer()
@@ -124,7 +150,13 @@ async def pick_category(callback: CallbackQuery, state: FSMContext, kufar: Kufar
 
 
 @router.callback_query(F.data.startswith("pick:lo:"))
-async def pick_location(callback: CallbackQuery, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+async def pick_location(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    kufar: KufarClient,
+    user=None,
+) -> None:
     parts = callback.data.split(":")
     action = parts[2]
     data = await state.get_data()
@@ -140,6 +172,8 @@ async def pick_location(callback: CallbackQuery, state: FSMContext, db: Database
             from bot.handlers.edit import _finish_edit
             await callback.message.delete()
             await _finish_edit(callback.message, state, db, kufar, alert)
+        elif await _return_to_draft_if_needed(callback, state, user):
+            pass
         else:
             await _go_new_price(callback, state)
         await callback.answer()
@@ -174,6 +208,8 @@ async def pick_location(callback: CallbackQuery, state: FSMContext, db: Database
         await state.update_data(params=params)
         if flow == "edit":
             await _finish_edit_location(callback, state, db, kufar, params)
+        elif await _return_to_draft_if_needed(callback, state, user):
+            pass
         else:
             await _go_new_price(callback, state)
         await callback.answer()
@@ -190,6 +226,8 @@ async def pick_location(callback: CallbackQuery, state: FSMContext, db: Database
         await state.update_data(params=params)
         if flow == "edit":
             await _finish_edit_location(callback, state, db, kufar, params)
+        elif await _return_to_draft_if_needed(callback, state, user):
+            pass
         else:
             await _go_new_price(callback, state)
         await callback.answer()

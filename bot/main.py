@@ -26,33 +26,33 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    settings = get_settings()
-    Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
+    app_settings = get_settings()
+    Path(app_settings.database_path).parent.mkdir(parents=True, exist_ok=True)
 
     bot = Bot(
-        token=settings.bot_token,
+        token=app_settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
-    db = Database(settings.database_path)
-    await db.init(admin_user_ids=settings.admin_user_ids)
+    db = Database(app_settings.database_path)
+    await db.init(admin_user_ids=app_settings.admin_user_ids)
     pruned = await db.prune_old_seen()
     if pruned:
         logger.info("Pruned %s old seen_ads records", pruned)
 
     async with aiohttp.ClientSession() as session:
-        kufar = KufarClient(session, search_size=settings.search_size)
+        kufar = KufarClient(session, search_size=app_settings.search_size)
         try:
             await kufar.load_category_tree()
         except Exception:
             logger.exception("Failed to load category tree, continuing without it")
 
         dp.update.middleware(DedupMiddleware())
-        dp.update.middleware(InjectMiddleware(db, kufar, settings))
-        dp.update.middleware(AccessMiddleware(db, settings))
+        dp.update.middleware(InjectMiddleware(db, kufar, app_settings))
+        dp.update.middleware(AccessMiddleware(db, app_settings))
 
         dp.include_router(start.router)
-        dp.include_router(settings.router)
+        dp.include_router(settings_handlers.router)
         dp.include_router(admin.router)
         dp.include_router(alerts.router)
         dp.include_router(edit.router)
@@ -62,7 +62,7 @@ async def main() -> None:
             bot=bot,
             db=db,
             kufar=kufar,
-            interval=settings.poll_interval,
+            interval=app_settings.poll_interval,
         )
         poller.start()
 

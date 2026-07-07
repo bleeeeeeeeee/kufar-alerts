@@ -13,7 +13,8 @@ from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
 from bot.seeding import seed_alert
 from bot.states import EditAlertStates
 from bot.ui import alert_detail_keyboard, alerts_list_keyboard, format_alert_card, format_alerts_overview
-from bot.utils.chat import WizardCleaner, track_message
+from bot.users import User
+from bot.utils.chat import prepare_menu_message, send_menu_message, track_message, WizardCleaner
 
 router = Router()
 
@@ -53,11 +54,12 @@ async def _finish_edit(
     db: Database,
     kufar: KufarClient,
     alert: Alert,
+    user: User | None = None,
     *,
     reseed: bool = True,
 ) -> None:
-    cleaner = WizardCleaner(state)
-    await cleaner.cleanup_wizard(message.bot, message.chat.id)
+    cleaner = WizardCleaner(state, user)
+    await cleaner.cleanup_wizard(message.bot, message.chat.id, message.from_user.id)
     seeded = await _seed_alert(alert, kufar, db) if reseed else 0
     await state.clear()
     text = f"✅ <b>Подписка обновлена!</b>\n\n{format_alert_card(alert)}"
@@ -77,8 +79,8 @@ async def _finish_edit(
 
 @router.message(Command("edit"))
 @router.message(F.text == MAIN_MENU_BUTTONS["edit"])
-async def cmd_edit(message: Message, state: FSMContext, db: Database) -> None:
-    await state.clear()
+async def cmd_edit(message: Message, state: FSMContext, db: Database, user: User | None) -> None:
+    await prepare_menu_message(message, user, state)
     parts = (message.text or "").split()
     user_id = message.from_user.id
 

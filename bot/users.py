@@ -7,15 +7,22 @@ from typing import Any
 @dataclass
 class UserSettings:
     photos_enabled: bool = True
+    auto_clear_chat: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> UserSettings:
         if not data:
             return cls()
-        return cls(photos_enabled=bool(data.get("photos_enabled", True)))
+        return cls(
+            photos_enabled=bool(data.get("photos_enabled", True)),
+            auto_clear_chat=bool(data.get("auto_clear_chat", True)),
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"photos_enabled": self.photos_enabled}
+        return {
+            "photos_enabled": self.photos_enabled,
+            "auto_clear_chat": self.auto_clear_chat,
+        }
 
 
 @dataclass

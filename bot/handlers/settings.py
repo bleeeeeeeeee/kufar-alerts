@@ -8,15 +8,17 @@ from bot.config import Settings
 from bot.database import Database
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
 from bot.users import User
-from bot.utils.chat import track_message
+from bot.utils.chat import send_menu_message, track_message
 
 router = Router()
 
 
 def settings_keyboard(user: User) -> InlineKeyboardMarkup:
     photos_label = "🖼 Фото: вкл" if user.settings.photos_enabled else "🖼 Фото: выкл"
+    clear_label = "🧹 Автоочистка: вкл" if user.settings.auto_clear_chat else "🧹 Автоочистка: выкл"
     rows = [
         [InlineKeyboardButton(text=photos_label, callback_data="settings:toggle_photos")],
+        [InlineKeyboardButton(text=clear_label, callback_data="settings:toggle_clear")],
     ]
     if user.is_admin:
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")])
@@ -26,6 +28,7 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
 def format_settings_text(user: User, app_settings: Settings) -> str:
     access_label = "открытый" if app_settings.access_mode == "open" else "по приглашению"
     photos = "включены" if user.settings.photos_enabled else "выключены"
+    auto_clear = "включена" if user.settings.auto_clear_chat else "выключена"
     role = "администратор" if user.is_admin else "пользователь"
 
     lines = [
@@ -36,6 +39,7 @@ def format_settings_text(user: User, app_settings: Settings) -> str:
         f"🔑 Роль: {role}",
         "",
         f"🖼 Фото в уведомлениях: {photos}",
+        f"🧹 Автоочистка чата: {auto_clear}",
         f"🔒 Режим доступа: {access_label}",
     ]
     if app_settings.access_mode == "invite" and not user.is_admin:
@@ -45,7 +49,13 @@ def format_settings_text(user: User, app_settings: Settings) -> str:
 
 @router.message(Command("settings"))
 @router.message(F.text == MAIN_MENU_BUTTONS["settings"])
-async def cmd_settings(message: Message, user: User | None, db: Database, app_settings: Settings) -> None:
+async def cmd_settings(
+    message: Message,
+    user: User | None,
+    db: Database,
+    app_settings: Settings,
+    state,
+) -> None:
     if not user:
         sent = await message.answer(
             "🔒 Нет доступа. Отправьте /start — там будет ваш ID для администратора.",
@@ -54,12 +64,14 @@ async def cmd_settings(message: Message, user: User | None, db: Database, app_se
         await track_message(message.from_user.id, sent.message_id)
         return
 
-    sent = await message.answer(
+    await send_menu_message(
+        message,
+        user,
         format_settings_text(user, app_settings),
+        state,
         parse_mode="HTML",
         reply_markup=settings_keyboard(user),
     )
-    await track_message(message.from_user.id, sent.message_id)
 
 
 @router.callback_query(F.data == "settings:toggle_photos")
@@ -80,3 +92,23 @@ async def toggle_photos(callback: CallbackQuery, user: User | None, db: Database
         reply_markup=settings_keyboard(updated),
     )
     await callback.answer("Фото " + ("включены" if new_value else "выключены"))
+
+
+@router.callback_query(F.data == "settings:toggle_clear")
+async def toggle_clear(callback: CallbackQuery, user: User | None, db: Database, app_settings: Settings) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    new_value = not user.settings.auto_clear_chat
+    updated = await db.update_user_settings(user.user_id, {"auto_clear_chat": new_value})
+    if not updated:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        format_settings_text(updated, app_settings),
+        parse_mode="HTML",
+        reply_markup=settings_keyboard(updated),
+    )
+    await callback.answer("Автоочистка " + ("включена" if new_value else "выключена"))

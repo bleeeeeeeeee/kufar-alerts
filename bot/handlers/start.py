@@ -7,7 +7,7 @@ from bot.config import Settings
 from bot.database import Database
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
 from bot.users import User
-from bot.utils.chat import track_message
+from bot.utils.chat import send_menu_message, track_message
 
 router = Router()
 
@@ -28,7 +28,7 @@ HELP_TEXT = """
 
 <b>📋 Подписки</b> — список, пауза, редактирование, синхронизация
 
-<b>⚙️ Настройки</b> — ваш профиль и параметры уведомлений
+<b>⚙️ Настройки</b> — профиль, фото в уведомлениях, автоочистка чата
 
 Проверка — каждые ~45 секунд. У каждого пользователя <b>свои</b> подписки и настройки.
 """
@@ -71,26 +71,34 @@ async def cmd_start(
         status = ""
         hint = "Нажмите <b>➕ Новая подписка</b>, чтобы начать."
 
-    sent = await message.answer(
+    sent = await send_menu_message(
+        message,
+        user,
         "👋 <b>Kufar Alerts</b>\n\n"
         f"Привет, <b>{user.display_name}</b>!\n"
         "Присылаю уведомления о новых объявлениях на Kufar."
         f"{status}\n\n{hint}",
+        state,
         parse_mode="HTML",
         reply_markup=MAIN_MENU,
     )
-    await track_message(message.from_user.id, sent.message_id)
 
 
 @router.message(Command("help"))
 @router.message(F.text == MAIN_MENU_BUTTONS["help"])
-async def cmd_help(message: Message, user: User | None) -> None:
+async def cmd_help(message: Message, user: User | None, state) -> None:
     if user is None:
         sent = await message.answer("Сначала получите доступ — отправьте /start.")
         await track_message(message.from_user.id, sent.message_id)
         return
-    sent = await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
-    await track_message(message.from_user.id, sent.message_id)
+    await send_menu_message(
+        message,
+        user,
+        HELP_TEXT,
+        state,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 @router.message(Command("status"))

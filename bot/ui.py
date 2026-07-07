@@ -82,7 +82,7 @@ def format_draft_preview(name: str, query: str, params: dict[str, Any]) -> str:
         "",
         f'🔗 <a href="{url}">Проверить на Kufar</a>',
         "",
-        "Всё верно? Нажмите «Создать».",
+        "Всё верно? Нажмите «Создать» или «Изменить».",
     ]
     return "\n".join(lines)
 
@@ -165,6 +165,34 @@ def confirm_subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Создать подписку", callback_data="new:confirm")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="new:cancel")],
+            [InlineKeyboardButton(text="✏️ Изменить", callback_data="new:edit")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="new:cancel_confirm")],
+        ]
+    )
+
+
+def draft_edit_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📝 Название", callback_data="new:edit:name"),
+                InlineKeyboardButton(text="🔎 Запрос", callback_data="new:edit:query"),
+            ],
+            [
+                InlineKeyboardButton(text="📂 Категория", callback_data="new:edit:cat"),
+                InlineKeyboardButton(text="📍 Место", callback_data="new:edit:loc"),
+            ],
+            [InlineKeyboardButton(text="💰 Цена", callback_data="new:edit:price")],
+            [InlineKeyboardButton(text="🔗 Ссылка Kufar", callback_data="new:edit:url")],
+            [InlineKeyboardButton(text="◀️ К предпросмотру", callback_data="new:edit:back")],
+        ]
+    )
+
+
+def cancel_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Вернуться к редактированию", callback_data="new:edit:back")],
+            [InlineKeyboardButton(text="🗑 Да, отменить", callback_data="new:cancel")],
         ]
     )

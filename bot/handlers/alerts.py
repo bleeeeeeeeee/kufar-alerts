@@ -16,13 +16,16 @@ from bot.ui import (
     alert_delete_confirm_keyboard,
     alert_detail_keyboard,
     alerts_list_keyboard,
+    cancel_confirm_keyboard,
     confirm_subscription_keyboard,
+    draft_edit_keyboard,
     format_alert_card,
     format_alerts_overview,
     format_draft_preview,
     new_subscription_keyboard,
 )
-from bot.utils.chat import WizardCleaner, track_message
+from bot.users import User
+from bot.utils.chat import WizardCleaner, prepare_menu_callback, prepare_menu_message, send_menu_message, track_message
 
 router = Router()
 
@@ -51,6 +54,7 @@ async def _show_draft(message: Message, state: FSMContext, cleaner: WizardCleane
     query = data.get("query", "")
     params = data.get("params", {})
     name = data.get("name") or query or "Подписка"
+    await state.update_data(return_to=None)
 
     await cleaner.send(
         message,
@@ -63,32 +67,123 @@ async def _show_draft(message: Message, state: FSMContext, cleaner: WizardCleane
     await state.set_state(NewAlertStates.confirm)
 
 
+async def _show_draft_callback(callback: CallbackQuery, state: FSMContext, cleaner: WizardCleaner) -> None:
+    data = await state.get_data()
+    query = data.get("query", "")
+    params = data.get("params", {})
+    name = data.get("name") or query or "Подписка"
+    await state.update_data(return_to=None)
+
+    await cleaner.edit_or_send(
+        callback,
+        format_draft_preview(name, query, params),
+        parse_mode="HTML",
+        reply_markup=confirm_subscription_keyboard(),
+        disable_web_page_preview=True,
+    )
+    await state.set_state(NewAlertStates.confirm)
+
+
 @router.message(Command("new"))
 @router.message(F.text == MAIN_MENU_BUTTONS["new"])
 @router.callback_query(F.data == "alert:new")
-async def cmd_new(event: Message | CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
+async def cmd_new(event: Message | CallbackQuery, state: FSMContext, user: User | None) -> None:
     text = (
         "<b>➕ Новая подписка</b>\n\n"
         "Самый быстрый способ — вставить ссылку с поиска на kufar.by.\n"
         "Или настройте фильтры вручную шаг за шагом."
     )
+    cleaner = WizardCleaner(state, user)
     if isinstance(event, CallbackQuery):
-        await event.message.edit_text(text, parse_mode="HTML", reply_markup=new_subscription_keyboard())
+        await cleaner.begin_callback(event, state)
+        await cleaner.edit_or_send(event, text, parse_mode="HTML", reply_markup=new_subscription_keyboard())
         await event.answer()
     else:
-        cleaner = WizardCleaner(state)
+        await cleaner.begin(event, state)
         await cleaner.send(event, text, parse_mode="HTML", reply_markup=new_subscription_keyboard())
     await state.set_state(NewAlertStates.waiting_method)
 
 
+@router.callback_query(F.data == "new:cancel_confirm", NewAlertStates.confirm)
+async def cancel_confirm_prompt(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        "Отменить создание подписки?",
+        reply_markup=cancel_confirm_keyboard(),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data == "new:cancel")
-async def cancel_new(callback: CallbackQuery, state: FSMContext) -> None:
-    cleaner = WizardCleaner(state)
-    await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id)
+async def cancel_new(callback: CallbackQuery, state: FSMContext, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user)
+    await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id, callback.from_user.id)
     await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     sent = await callback.message.answer("Создание подписки отменено.", reply_markup=MAIN_MENU)
     await track_message(callback.from_user.id, sent.message_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "new:edit", NewAlertStates.confirm)
+async def new_edit_menu(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        "<b>✏️ Что изменить?</b>\n\nВыберите поле — после правки вернётесь к предпросмотру.",
+        parse_mode="HTML",
+        reply_markup=draft_edit_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "new:edit:back")
+async def new_edit_back(callback: CallbackQuery, state: FSMContext, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user)
+    await _show_draft_callback(callback, state, cleaner)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("new:edit:"))
+async def new_edit_field(callback: CallbackQuery, state: FSMContext, kufar: KufarClient, user: User | None) -> None:
+    field = callback.data.split(":")[-1]
+    if field == "back":
+        await callback.answer()
+        return
+
+    await state.update_data(return_to="confirm", flow="new")
+    cleaner = WizardCleaner(state, user)
+
+    if field == "name":
+        await callback.message.edit_text(
+            "<b>📝 Название</b>\n\nВведите новое название подписки:",
+            parse_mode="HTML",
+        )
+        await state.set_state(NewAlertStates.waiting_name)
+    elif field == "query":
+        await callback.message.edit_text(
+            "<b>🔎 Запрос</b>\n\nВведите поисковый запрос или <code>-</code> чтобы убрать.",
+            parse_mode="HTML",
+        )
+        await state.set_state(NewAlertStates.waiting_query)
+    elif field == "url":
+        await callback.message.edit_text(
+            "<b>🔗 Ссылка</b>\n\nОтправьте новую ссылку поиска с kufar.by:",
+            parse_mode="HTML",
+        )
+        await state.set_state(NewAlertStates.waiting_url)
+    elif field == "price":
+        await callback.message.edit_text(
+            f"<b>💰 Цена</b>\n\n{PRICE_INPUT_HINT}",
+            parse_mode="HTML",
+            reply_markup=skip_keyboard("new:skip_price"),
+        )
+        await state.set_state(NewAlertStates.waiting_price)
+    elif field == "cat":
+        await callback.message.edit_text("<b>📂 Категория</b>", parse_mode="HTML")
+        await show_category_picker(callback, state, kufar)
+    elif field == "loc":
+        await show_region_picker(callback)
     await callback.answer()
 
 
@@ -120,8 +215,8 @@ async def new_manual(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(NewAlertStates.waiting_url)
-async def process_url(message: Message, state: FSMContext) -> None:
-    cleaner = WizardCleaner(state)
+async def process_url(message: Message, state: FSMContext, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user)
     try:
         query, params = parse_kufar_url(message.text or "")
     except ValueError as exc:
@@ -146,10 +241,18 @@ async def skip_query(callback: CallbackQuery, state: FSMContext, kufar: KufarCli
 
 
 @router.message(NewAlertStates.waiting_query)
-async def process_query(message: Message, state: FSMContext, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
-    query = (message.text or "").strip()
+async def process_query(message: Message, state: FSMContext, kufar: KufarClient, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user)
+    text = (message.text or "").strip()
+    query = "" if text == "-" else text
     await state.update_data(query=query, flow="new")
+    data = await state.get_data()
+
+    if data.get("return_to") == "confirm":
+        await cleaner.delete_user(message)
+        await _show_draft(message, state, cleaner)
+        return
+
     await cleaner.delete_user(message)
     sent = await message.answer("<b>Шаг 2/5 — Категория</b>", parse_mode="HTML")
     await track_message(message.from_user.id, sent.message_id)
@@ -157,10 +260,20 @@ async def process_query(message: Message, state: FSMContext, kufar: KufarClient)
 
 
 @router.callback_query(F.data == "new:skip_price", NewAlertStates.waiting_price)
-async def skip_price(callback: CallbackQuery, state: FSMContext) -> None:
+async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | None) -> None:
+    data = await state.get_data()
+    params = dict(data.get("params", {}))
+    params.pop("prc", None)
+    await state.update_data(params=params)
+
+    if data.get("return_to") == "confirm":
+        cleaner = WizardCleaner(state, user)
+        await _show_draft_callback(callback, state, cleaner)
+        await callback.answer()
+        return
+
     await callback.message.edit_text(
-        "<b>Шаг 5/5 — Название</b>\n\n"
-        "Как назвать подписку? (для удобства в списке)",
+        "<b>Шаг 5/5 — Название</b>\n\nКак назвать подписку? (для удобства в списке)",
         parse_mode="HTML",
     )
     await state.set_state(NewAlertStates.waiting_name)
@@ -168,8 +281,8 @@ async def skip_price(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(NewAlertStates.waiting_price)
-async def process_price(message: Message, state: FSMContext) -> None:
-    cleaner = WizardCleaner(state)
+async def process_price(message: Message, state: FSMContext, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user)
     try:
         prc = parse_price_input(message.text or "")
     except ValueError as exc:
@@ -183,6 +296,12 @@ async def process_price(message: Message, state: FSMContext) -> None:
     else:
         params.pop("prc", None)
     await state.update_data(params=params)
+    data = await state.get_data()
+
+    if data.get("return_to") == "confirm":
+        await cleaner.delete_user(message)
+        await _show_draft(message, state, cleaner)
+        return
 
     await cleaner.send(
         message,
@@ -194,8 +313,8 @@ async def process_price(message: Message, state: FSMContext) -> None:
 
 
 @router.message(NewAlertStates.waiting_name)
-async def process_name(message: Message, state: FSMContext) -> None:
-    cleaner = WizardCleaner(state)
+async def process_name(message: Message, state: FSMContext, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user)
     name = (message.text or "").strip() or "Подписка"
     await state.update_data(name=name)
     await _show_draft(message, state, cleaner)
@@ -207,8 +326,9 @@ async def confirm_new(
     state: FSMContext,
     db: Database,
     kufar: KufarClient,
+    user: User | None,
 ) -> None:
-    cleaner = WizardCleaner(state)
+    cleaner = WizardCleaner(state, user)
     data = await state.get_data()
     query = data.get("query", "")
     params = {k: v for k, v in data.get("params", {}).items() if not k.startswith("_")}
@@ -229,7 +349,7 @@ async def confirm_new(
         else "⚠️ Не удалось загрузить объявления — проверьте фильтры."
     )
 
-    await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id)
+    await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id, callback.from_user.id)
     await state.clear()
 
     try:
@@ -250,9 +370,14 @@ async def confirm_new(
 @router.message(Command("list"))
 @router.message(F.text == MAIN_MENU_BUTTONS["list"])
 @router.callback_query(F.data == "alert:list")
-async def cmd_list(event: Message | CallbackQuery, db: Database) -> None:
+async def cmd_list(event: Message | CallbackQuery, db: Database, user: User | None, state: FSMContext) -> None:
     user_id = event.from_user.id
     alerts = await db.get_user_alerts(user_id)
+
+    if isinstance(event, CallbackQuery):
+        await prepare_menu_callback(event, user, state)
+    else:
+        await prepare_menu_message(event, user, state)
 
     if not alerts:
         text = (
@@ -279,7 +404,8 @@ async def cmd_list(event: Message | CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("alert:view:"))
-async def alert_view_cb(callback: CallbackQuery, db: Database) -> None:
+async def alert_view_cb(callback: CallbackQuery, db: Database, user: User | None, state: FSMContext) -> None:
+    await prepare_menu_callback(callback, user, state)
     alert_id = int(callback.data.split(":")[-1])
     alert = await db.get_alert(alert_id, callback.from_user.id)
     if not alert:
