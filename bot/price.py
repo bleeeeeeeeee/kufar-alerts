@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 
 PRICE_MAX = 999_999_999
+# Kufar website uses cents; this is the open-max sentinel in cents (÷100 = PRICE_MAX BYN).
+WEBSITE_PRICE_MAX_CENTS = 100_000_000_000
 
 
 def format_byn(amount: int | str) -> str:
@@ -38,20 +40,47 @@ def build_prc(min_v: int | None, max_v: int | None) -> str | None:
     return f"r:{min_s},{max_s}"
 
 
+def normalize_prc(prc: str | None) -> str | None:
+    """Canonical internal prc in BYN with open bounds."""
+    if not prc:
+        return None
+    if not prc.startswith("r:"):
+        return prc
+
+    body = prc[2:]
+    if "," not in body:
+        return prc
+
+    min_s, max_s = body.split(",", 1)
+    min_raw = int(min_s) if min_s.strip() else None
+    max_raw = int(max_s) if max_s.strip() else None
+
+    if max_raw in (WEBSITE_PRICE_MAX_CENTS, PRICE_MAX * 100):
+        return prc_from_website(prc)
+    if min_raw is not None and min_raw >= 50_000:
+        return prc_from_website(prc)
+    if max_raw is not None and max_raw >= 50_000 and min_raw is None:
+        return prc_from_website(prc)
+
+    return build_prc(*parse_prc(prc))
+
+
 def prc_for_api(prc: str | None) -> str | None:
-    min_v, max_v = parse_prc(prc)
+    min_v, max_v = parse_prc(normalize_prc(prc))
     if min_v is None and max_v is None:
         return None
     return f"r:{min_v or 0},{max_v if max_v is not None else PRICE_MAX}"
 
 
 def prc_for_website(prc: str | None) -> str | None:
-    min_v, max_v = parse_prc(prc)
+    min_v, max_v = parse_prc(normalize_prc(prc))
     if min_v is None and max_v is None:
         return None
-    min_s = str(min_v * 100) if min_v is not None else ""
-    max_s = str(max_v * 100) if max_v is not None else ""
-    return f"r:{min_s},{max_s}"
+    # Kufar website breaks on open bounds (r:150000,) and adds a fake max on submit.
+    # Only include price when both bounds are set; alerts still use API prc_for_api().
+    if min_v is None or max_v is None:
+        return None
+    return f"r:{min_v * 100},{max_v * 100}"
 
 
 def prc_from_website(prc: str) -> str:
@@ -66,6 +95,10 @@ def prc_from_website(prc: str) -> str:
     min_s, max_s = body.split(",", 1)
     min_v = int(min_s) // 100 if min_s.strip() else None
     max_v = int(max_s) // 100 if max_s.strip() else None
+    if min_v == 0:
+        min_v = None
+    if max_v is not None and max_v >= PRICE_MAX:
+        max_v = None
     return build_prc(min_v, max_v) or prc
 
 
@@ -123,7 +156,7 @@ def format_price_display(prc: str | None) -> str:
     if not prc:
         return ""
 
-    min_v, max_v = parse_prc(prc)
+    min_v, max_v = parse_prc(normalize_prc(prc))
     if min_v is None and max_v is None:
         if prc.startswith("r:"):
             return prc

@@ -96,6 +96,19 @@ class Database:
             await db.execute("PRAGMA foreign_keys=ON")
             yield db
 
+    @staticmethod
+    def _normalize_params(params: dict[str, Any]) -> dict[str, Any]:
+        params = {k: v for k, v in params.items() if not str(k).startswith("_")}
+        if params.get("prc"):
+            from bot.price import normalize_prc
+
+            normalized = normalize_prc(params["prc"])
+            if normalized:
+                params["prc"] = normalized
+            else:
+                params.pop("prc", None)
+        return params
+
     async def create_alert(
         self,
         user_id: int,
@@ -103,7 +116,7 @@ class Database:
         query: str,
         params: dict[str, Any] | None = None,
     ) -> Alert:
-        params = {k: v for k, v in (params or {}).items() if not str(k).startswith("_")}
+        params = self._normalize_params(params or {})
         async with self._db() as db:
             cursor = await db.execute(
                 """
@@ -179,7 +192,7 @@ class Database:
         new_name = name if name is not None else alert.name
         new_query = query if query is not None else alert.query
         new_params = params if params is not None else alert.params
-        new_params = {k: v for k, v in new_params.items() if not str(k).startswith("_")}
+        new_params = self._normalize_params(new_params)
 
         async with self._db() as db:
             await db.execute(
@@ -281,9 +294,9 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
             params[key] = values[0]
 
     if params.get("prc"):
-        from bot.price import prc_from_website
+        from bot.price import normalize_prc
 
-        params["prc"] = prc_from_website(params["prc"])
+        params["prc"] = normalize_prc(params["prc"]) or params["prc"]
 
     path_parts = [p for p in parsed.path.split("/") if p]
     if not params.get("cat") and path_parts:
