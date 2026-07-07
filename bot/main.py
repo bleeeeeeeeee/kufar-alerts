@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings
 from bot.database import Database
-from bot.handlers import admin, alerts, edit, pickers, settings, start
+from bot.handlers import admin, alerts, edit, pickers, settings as settings_handlers, start
 from bot.kufar import KufarClient
 from bot.middleware import AccessMiddleware, DedupMiddleware, InjectMiddleware
 from bot.poller import AlertPoller
