@@ -60,17 +60,23 @@ class UserSettings:
     auto_clear_chat: bool = True
     notification_topic_id: int | None = None
     notification_display: NotificationDisplay = field(default_factory=NotificationDisplay)
+    poll_interval: int | None = None
+    notify_cooldown: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> UserSettings:
         if not data:
             return cls()
         topic_id = data.get("notification_topic_id")
+        poll_interval = data.get("poll_interval")
+        notify_cooldown = int(data.get("notify_cooldown") or 0)
         return cls(
             photos_enabled=bool(data.get("photos_enabled", True)),
             auto_clear_chat=bool(data.get("auto_clear_chat", True)),
             notification_topic_id=int(topic_id) if topic_id else None,
             notification_display=NotificationDisplay.from_dict(data.get("notification_display")),
+            poll_interval=int(poll_interval) if poll_interval else None,
+            notify_cooldown=max(0, notify_cooldown),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,10 +84,16 @@ class UserSettings:
             "photos_enabled": self.photos_enabled,
             "auto_clear_chat": self.auto_clear_chat,
             "notification_display": self.notification_display.to_dict(),
+            "notify_cooldown": self.notify_cooldown,
         }
         if self.notification_topic_id is not None:
             data["notification_topic_id"] = self.notification_topic_id
+        if self.poll_interval is not None:
+            data["poll_interval"] = self.poll_interval
         return data
+
+    def effective_poll_interval(self, default: int) -> int:
+        return self.poll_interval if self.poll_interval is not None else default
 
 
 @dataclass

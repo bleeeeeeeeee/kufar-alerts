@@ -455,6 +455,8 @@ class Database:
                 **user.settings.notification_display.to_dict(),
                 **settings["notification_display"],
             }
+        if settings.get("poll_interval") is None and "poll_interval" in settings:
+            merged.pop("poll_interval", None)
         for key, value in list(merged.items()):
             if value is None:
                 merged.pop(key, None)

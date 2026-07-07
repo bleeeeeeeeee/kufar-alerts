@@ -18,6 +18,14 @@ from bot.topics import (
     create_notification_topic,
     send_text_to_topic,
 )
+from bot.timing import (
+    NOTIFY_COOLDOWN_OPTIONS,
+    POLL_INTERVAL_OPTIONS,
+    format_notify_cooldown,
+    format_poll_interval,
+    notify_cooldown_label,
+    poll_interval_label,
+)
 from bot.users import DISPLAY_FIELD_ICONS, DISPLAY_FIELD_LABELS, User
 from bot.utils.chat import send_menu_message, track_message
 
@@ -38,6 +46,7 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=photos_label, callback_data="settings:toggle_photos")],
         [InlineKeyboardButton(text=clear_label, callback_data="settings:toggle_clear")],
         [InlineKeyboardButton(text="🧾 Поля уведомления", callback_data="settings:display_menu")],
+        [InlineKeyboardButton(text="⏱ Задержки", callback_data="settings:timing_menu")],
         [InlineKeyboardButton(text=topic_label, callback_data="settings:topic_menu")],
     ]
     if user.is_admin:
@@ -72,6 +81,73 @@ def format_display_menu_text() -> str:
         "Выберите, что показывать в сообщениях о новых объявлениях.\n"
         "Название и ссылка отображаются всегда."
     )
+
+
+def timing_menu_keyboard(user: User, app_settings: Settings) -> InlineKeyboardMarkup:
+    poll = format_poll_interval(user.settings.poll_interval, default=app_settings.poll_interval)
+    cooldown = format_notify_cooldown(user.settings.notify_cooldown)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"🔍 Проверка Kufar: {poll}", callback_data="settings:poll_menu")],
+            [InlineKeyboardButton(text=f"⏳ Пауза между уведомлениями: {cooldown}", callback_data="settings:cooldown_menu")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="settings:back")],
+        ]
+    )
+
+
+def format_timing_menu_text(user: User, app_settings: Settings) -> str:
+    poll = format_poll_interval(user.settings.poll_interval, default=app_settings.poll_interval)
+    cooldown = format_notify_cooldown(user.settings.notify_cooldown)
+    return (
+        "<b>⏱ Задержки</b>\n\n"
+        f"🔍 <b>Проверка Kufar:</b> {poll}\n"
+        "Как часто бот ищет новые объявления по вашим подпискам.\n\n"
+        f"⏳ <b>Пауза между уведомлениями:</b> {cooldown}\n"
+        "Минимальный интервал между сообщениями, если за раз нашлось несколько объявлений."
+    )
+
+
+def poll_interval_keyboard(user: User, app_settings: Settings) -> InlineKeyboardMarkup:
+    current = user.settings.poll_interval
+    rows: list[list[InlineKeyboardButton]] = []
+    default_mark = "✓ " if current is None else ""
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"{default_mark}По умолчанию (~{app_settings.poll_interval} сек)",
+                callback_data="settings:set_poll:default",
+            )
+        ]
+    )
+    for value in POLL_INTERVAL_OPTIONS:
+        mark = "✓ " if current == value else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark}{poll_interval_label(value, default=app_settings.poll_interval)}",
+                    callback_data=f"settings:set_poll:{value}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="settings:timing_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def notify_cooldown_keyboard(user: User) -> InlineKeyboardMarkup:
+    current = user.settings.notify_cooldown
+    rows: list[list[InlineKeyboardButton]] = []
+    for value in NOTIFY_COOLDOWN_OPTIONS:
+        mark = "✓ " if current == value else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark}{notify_cooldown_label(value)}",
+                    callback_data=f"settings:set_cooldown:{value}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="settings:timing_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def topic_menu_keyboard(user: User) -> InlineKeyboardMarkup:
@@ -111,6 +187,8 @@ def format_settings_text(user: User, app_settings: Settings) -> str:
         "",
         f"🖼 Фото в уведомлениях: {photos}",
         f"🧹 Автоочистка чата: {auto_clear}",
+        f"🔍 Проверка Kufar: {format_poll_interval(user.settings.poll_interval, default=app_settings.poll_interval)}",
+        f"⏳ Пауза между уведомлениями: {format_notify_cooldown(user.settings.notify_cooldown)}",
         f"📬 Топик уведомлений: {topic}",
         f"🔒 Режим доступа: {access_label}",
     ]
@@ -220,6 +298,98 @@ async def display_toggle(
     )
     state_label = "включено" if current[field] else "выключено"
     await callback.answer(f"{DISPLAY_FIELD_LABELS[field]}: {state_label}")
+
+
+@router.callback_query(F.data == "settings:timing_menu")
+async def timing_menu(callback: CallbackQuery, user: User | None, app_settings: Settings) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text(
+        format_timing_menu_text(user, app_settings),
+        parse_mode="HTML",
+        reply_markup=timing_menu_keyboard(user, app_settings),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings:poll_menu")
+async def poll_menu(callback: CallbackQuery, user: User | None, app_settings: Settings) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "<b>🔍 Как часто проверять Kufar</b>\n\nВыберите интервал для ваших подписок:",
+        parse_mode="HTML",
+        reply_markup=poll_interval_keyboard(user, app_settings),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings:cooldown_menu")
+async def cooldown_menu(callback: CallbackQuery, user: User | None) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "<b>⏳ Пауза между уведомлениями</b>\n\n"
+        "Если за один проход нашлось несколько объявлений, бот будет ждать перед следующим:",
+        parse_mode="HTML",
+        reply_markup=notify_cooldown_keyboard(user),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("settings:set_poll:"))
+async def set_poll_interval(
+    callback: CallbackQuery,
+    user: User | None,
+    db: Database,
+    app_settings: Settings,
+) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    raw = callback.data.split(":")[-1]
+    poll_value = None if raw == "default" else int(raw)
+    updated = await db.update_user_settings(user.user_id, {"poll_interval": poll_value})
+    if not updated:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        format_timing_menu_text(updated, app_settings),
+        parse_mode="HTML",
+        reply_markup=timing_menu_keyboard(updated, app_settings),
+    )
+    label = format_poll_interval(updated.settings.poll_interval, default=app_settings.poll_interval)
+    await callback.answer(f"Проверка: {label}")
+
+
+@router.callback_query(F.data.startswith("settings:set_cooldown:"))
+async def set_notify_cooldown(
+    callback: CallbackQuery,
+    user: User | None,
+    db: Database,
+    app_settings: Settings,
+) -> None:
+    if not user:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    value = int(callback.data.split(":")[-1])
+    updated = await db.update_user_settings(user.user_id, {"notify_cooldown": value})
+    if not updated:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        format_timing_menu_text(updated, app_settings),
+        parse_mode="HTML",
+        reply_markup=timing_menu_keyboard(updated, app_settings),
+    )
+    await callback.answer(f"Пауза: {format_notify_cooldown(value)}")
 
 
 @router.callback_query(F.data == "settings:topic_menu")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import time
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
@@ -27,9 +28,12 @@ class AlertPoller:
         self.bot = bot
         self.db = db
         self.kufar = kufar
-        self.interval = interval
+        self.default_interval = interval
+        self.interval = min(15, interval)
         self._task: asyncio.Task | None = None
         self._running = False
+        self._alert_last_poll: dict[int, float] = {}
+        self._user_last_notify: dict[int, float] = {}
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -46,7 +50,7 @@ class AlertPoller:
                 pass
 
     async def _loop(self) -> None:
-        logger.info("Poller started, interval=%ss", self.interval)
+        logger.info("Poller started, tick=%ss, default_interval=%ss", self.interval, self.default_interval)
         while self._running:
             try:
                 await self._poll_once()
@@ -64,6 +68,9 @@ class AlertPoller:
 
         for alert in alerts:
             try:
+                if not await self._should_poll_alert(alert):
+                    continue
+                self._alert_last_poll[alert.id] = time.monotonic()
                 new_count, sent_count = await self._check_alert(alert)
                 total_new += new_count
                 total_sent += sent_count
@@ -119,7 +126,30 @@ class AlertPoller:
 
         return len(new_ads), len(notified_ids)
 
+    async def _should_poll_alert(self, alert: Alert) -> bool:
+        db_user = await self.db.get_user(alert.user_id)
+        interval = (
+            db_user.settings.effective_poll_interval(self.default_interval)
+            if db_user
+            else self.default_interval
+        )
+        last = self._alert_last_poll.get(alert.id, 0.0)
+        return time.monotonic() - last >= interval
+
+    async def _can_notify_user(self, user_id: int) -> bool:
+        db_user = await self.db.get_user(user_id)
+        if not db_user:
+            return True
+        cooldown = db_user.settings.notify_cooldown
+        if cooldown <= 0:
+            return True
+        last = self._user_last_notify.get(user_id, 0.0)
+        return time.monotonic() - last >= cooldown
+
     async def _notify(self, alert: Alert, ad: dict) -> bool:
+        if not await self._can_notify_user(alert.user_id):
+            return False
+
         image_urls = get_image_urls(ad)
         db_user = await self.db.get_user(alert.user_id)
         display = db_user.settings.notification_display if db_user else None
@@ -140,6 +170,7 @@ class AlertPoller:
                 message_thread_id=db_user.settings.notification_topic_id if db_user else None,
             )
             if error is None:
+                self._user_last_notify[alert.user_id] = time.monotonic()
                 logger.info(
                     "Notified user %s about ad %s (alert %s)",
                     alert.user_id,
