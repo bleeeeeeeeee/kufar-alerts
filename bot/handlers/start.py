@@ -26,7 +26,7 @@ HELP_TEXT = """
 • <code>500+</code> — от 500 BYN
 • <code>-</code> — без фильтра
 
-<b>📋 Подписки</b> — список, пауза, редактирование, синхронизация
+<b>📋 Подписки</b> — список → выберите подписку → ✏️ Изменить
 
 <b>⚙️ Настройки</b> — профиль, фото в уведомлениях, автоочистка чата
 
@@ -102,7 +102,7 @@ async def cmd_help(message: Message, user: User | None, state) -> None:
 
 
 @router.message(Command("status"))
-async def cmd_status(message: Message, db: Database, user: User | None) -> None:
+async def cmd_status(message: Message, db: Database, user: User | None, app_settings: Settings) -> None:
     if user is None:
         sent = await message.answer("Нет доступа. /start — ваш ID для администратора.")
         await track_message(message.from_user.id, sent.message_id)
@@ -110,8 +110,19 @@ async def cmd_status(message: Message, db: Database, user: User | None) -> None:
     alerts = await db.get_user_alerts(message.from_user.id)
     active = sum(1 for a in alerts if a.active)
     if not alerts:
-        text = "📊 Подписок нет. Бот готов к работе."
+        text = (
+            f"📊 Подписок нет. Бот готов к работе.\n"
+            f"Проверка: каждые ~{app_settings.poll_interval} сек, "
+            f"последние {app_settings.search_size} объявлений по каждой подписке."
+        )
     else:
-        text = f"📊 <b>Статус</b>\n\nПодписок: {len(alerts)}\nАктивных: {active}\nНа паузе: {len(alerts) - active}"
+        text = (
+            f"📊 <b>Статус</b>\n\n"
+            f"Подписок: {len(alerts)}\n"
+            f"Активных: {active}\n"
+            f"На паузе: {len(alerts) - active}\n\n"
+            f"⏱ Интервал: ~{app_settings.poll_interval} сек\n"
+            f"📥 Глубина поиска: {app_settings.search_size} последних объявлений"
+        )
     sent = await message.answer(text, parse_mode="HTML")
     await track_message(message.from_user.id, sent.message_id)

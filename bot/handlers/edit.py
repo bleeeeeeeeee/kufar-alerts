@@ -6,28 +6,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.database import Alert, Database, parse_kufar_url
-from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
+from bot.keyboards import MAIN_MENU, skip_keyboard
 from bot.handlers.pickers import show_category_picker, show_region_picker
 from bot.kufar import KufarClient, build_search_url
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
 from bot.seeding import seed_alert
 from bot.states import EditAlertStates
-from bot.ui import alert_detail_keyboard, alerts_list_keyboard, format_alert_card, format_alerts_overview
+from bot.ui import alert_detail_keyboard, format_alert_card
 from bot.users import User
 from bot.utils.chat import prepare_menu_message, send_menu_message, track_message, WizardCleaner
 
 router = Router()
 
 CLEAR_HINT = "\n\nОтправьте <code>-</code> чтобы убрать фильтр."
-
-
-def edit_pick_keyboard(alerts: list[Alert]) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text=f"✏️ {a.name}", callback_data=f"edit:pick:{a.id}")]
-        for a in alerts
-    ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="alert:list")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def edit_fields_keyboard(alert_id: int) -> InlineKeyboardMarkup:
@@ -78,13 +69,12 @@ async def _finish_edit(
 
 
 @router.message(Command("edit"))
-@router.message(F.text == MAIN_MENU_BUTTONS["edit"])
 async def cmd_edit(message: Message, state: FSMContext, db: Database, user: User | None) -> None:
-    await prepare_menu_message(message, user, state)
     parts = (message.text or "").split()
     user_id = message.from_user.id
 
     if len(parts) >= 2 and parts[1].isdigit():
+        await prepare_menu_message(message, user, state)
         alert_id = int(parts[1])
         alert = await db.get_alert(alert_id, user_id)
         if not alert:
@@ -101,16 +91,10 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database, user: User
         await track_message(user_id, sent.message_id)
         return
 
-    alerts = await db.get_user_alerts(user_id)
-    if not alerts:
-        sent = await message.answer("У вас нет подписок. Создайте: ➕ Новая подписка")
-        await track_message(user_id, sent.message_id)
-        return
-
     sent = await message.answer(
-        "<b>✏️ Редактирование</b>\n\nВыберите подписку:",
+        "Откройте <b>📋 Мои подписки</b>, выберите подписку и нажмите <b>✏️ Изменить</b>.",
         parse_mode="HTML",
-        reply_markup=edit_pick_keyboard(alerts),
+        reply_markup=MAIN_MENU,
     )
     await track_message(user_id, sent.message_id)
 
@@ -119,41 +103,6 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database, user: User
 async def edit_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("Редактирование отменено.")
-    await callback.answer()
-
-
-@router.callback_query(F.data == "edit:back")
-async def edit_back(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
-    await state.clear()
-    alerts = await db.get_user_alerts(callback.from_user.id)
-    if not alerts:
-        await callback.message.edit_text("У вас нет подписок.")
-        await callback.answer()
-        return
-    await callback.message.edit_text(
-        format_alerts_overview(alerts),
-        parse_mode="HTML",
-        reply_markup=alerts_list_keyboard(alerts),
-        disable_web_page_preview=True,
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("edit:pick:"))
-async def edit_pick(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
-    alert_id = int(callback.data.split(":")[-1])
-    alert = await db.get_alert(alert_id, callback.from_user.id)
-    if not alert:
-        await callback.answer("Подписка не найдена.", show_alert=True)
-        return
-
-    await state.update_data(edit_alert_id=alert_id)
-    await callback.message.edit_text(
-        f"<b>✏️ Редактирование</b>\n\n{format_alert_card(alert)}\n\nЧто изменить?",
-        parse_mode="HTML",
-        reply_markup=edit_fields_keyboard(alert_id),
-        disable_web_page_preview=True,
-    )
     await callback.answer()
 
 
