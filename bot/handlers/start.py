@@ -3,55 +3,56 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from bot.database import Database
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
+from bot.ui import alerts_list_keyboard, format_alerts_overview, new_subscription_keyboard
 from bot.utils.chat import track_message
 
 router = Router()
 
 HELP_TEXT = """
-<b>📖 Инструкция — Kufar Alerts</b>
+<b>📖 Kufar Alerts — инструкция</b>
 
-Бот присылает уведомления о <b>новых</b> объявлениях на kufar.by по вашим фильтрам.
+Бот следит за новыми объявлениями на <a href="https://www.kufar.by">kufar.by</a> и присылает уведомления в Telegram.
 
 <b>➕ Создать подписку</b>
-1. Настройте поиск на <a href="https://www.kufar.by">kufar.by</a>
-2. Скопируйте ссылку из адресной строки
-3. Нажмите «Новая подписка» и вставьте ссылку
+• <b>Ссылка</b> — скопируйте URL поиска с Kufar и вставьте в бота
+• <b>Вручную</b> — запрос, категория, регион, цена
 
-Или настройте вручную — бот спросит запрос, категорию, регион и цену.
-
-<b>📍 Место</b>
-Выберите регион → город или район кнопками.
-Можно выбрать «Вся область» или пропустить.
-
-<b>📂 Категория</b>
-Выбирается из списка — можно зайти в подкатегории.
-
-<b>💰 Как вводить цену</b>
+<b>💰 Цена</b>
 • <code>1500</code> — до 1500 BYN
-• <code>500-1500</code> — от 500 до 1500 BYN
-• <code>500+</code> — от 500 BYN и выше
-• <code>-</code> — без фильтра по цене
-
-<b>📍 Регионы</b> (выбираются кнопками)
-Минск, Минская обл., Брестская, Гомельская и др.
+• <code>500-1500</code> — диапазон
+• <code>500+</code> — от 500 BYN
+• <code>-</code> — без фильтра
 
 <b>📋 Управление</b>
-• Подписки — список с кнопками пауза/удаление
-• Редактировать — изменить фильтры
-• <code>/resync ID</code> — сбросить «просмотренные» объявления
+Откройте <b>Мои подписки</b> → выберите подписку:
+• ⏸ Пауза / ▶️ Возобновить
+• ✏️ Изменить фильтры
+• 🔄 Синхронизировать — сбросить «просмотренные»
+• 🗑 Удалить
 
-Проверка новых объявлений — каждые ~45 секунд.
+Проверка — каждые ~45 секунд. Уведомления только о <b>новых</b> объявлениях.
 """
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext) -> None:
+async def cmd_start(message: Message, state: FSMContext, db: Database) -> None:
     await state.clear()
+    alerts = await db.get_user_alerts(message.from_user.id)
+    active = sum(1 for a in alerts if a.active)
+
+    if alerts:
+        status = f"\n\n📋 У вас <b>{len(alerts)}</b> подписок ({active} активных)."
+        hint = "Откройте <b>📋 Мои подписки</b> для управления."
+    else:
+        status = ""
+        hint = "Нажмите <b>➕ Новая подписка</b>, чтобы начать."
+
     sent = await message.answer(
         "👋 <b>Kufar Alerts</b>\n\n"
-        "Слежу за новыми объявлениями на Kufar и присылаю уведомления.\n\n"
-        "Нажмите <b>➕ Новая подписка</b> или откройте <b>📖 Инструкцию</b>.",
+        "Присылаю уведомления о новых объявлениях на Kufar по вашим фильтрам."
+        f"{status}\n\n{hint}",
         parse_mode="HTML",
         reply_markup=MAIN_MENU,
     )
@@ -62,4 +63,16 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(F.text == MAIN_MENU_BUTTONS["help"])
 async def cmd_help(message: Message) -> None:
     sent = await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
+    await track_message(message.from_user.id, sent.message_id)
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message, db: Database) -> None:
+    alerts = await db.get_user_alerts(message.from_user.id)
+    active = sum(1 for a in alerts if a.active)
+    if not alerts:
+        text = "📊 Подписок нет. Бот готов к работе."
+    else:
+        text = f"📊 <b>Статус</b>\n\nПодписок: {len(alerts)}\nАктивных: {active}\nНа паузе: {len(alerts) - active}"
+    sent = await message.answer(text, parse_mode="HTML")
     await track_message(message.from_user.id, sent.message_id)

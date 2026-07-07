@@ -12,6 +12,21 @@ REGIONS: dict[int, str] = {
     6: "Витебская область",
 }
 
+# Slugs from kufar.by URLs like /l/r~brestskaya-obl
+REGION_SLUGS: dict[str, int] = {
+    "minsk": 7,
+    "brestskaya-obl": 1,
+    "gomelskaya-obl": 2,
+    "grodnenskaya-obl": 3,
+    "mogilevskaya-obl": 4,
+    "minskaya-obl": 5,
+    "vitebskaya-obl": 6,
+}
+
+
+def region_id_from_slug(slug: str) -> int | None:
+    return REGION_SLUGS.get(slug.lower())
+
 # region_id -> {area_id: name}
 AREAS: dict[int, dict[int, str]] = {
     7: {

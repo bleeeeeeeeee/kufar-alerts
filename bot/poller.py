@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 
 from aiogram import Bot
@@ -114,7 +115,7 @@ class AlertPoller:
     async def _notify(self, alert: Alert, ad: dict) -> bool:
         text = (
             f"🆕 <b>Новое объявление</b>\n"
-            f"Подписка: <i>{alert.name}</i>\n\n"
+            f"📌 <i>{html.escape(alert.name)}</i>\n\n"
             f"{format_ad_message(ad, self.kufar)}"
         )
         image_urls = get_image_urls(ad)

@@ -21,7 +21,11 @@ router = Router()
 
 
 async def show_category_picker(target: Message | CallbackQuery, state: FSMContext, kufar: KufarClient, parent_id: int | None = None) -> None:
-    text = category_title(kufar, parent_id)
+    data = await state.get_data()
+    step = ""
+    if data.get("flow") == "new" and parent_id is None:
+        step = "<b>Шаг 2/5 — Категория</b>\n\n"
+    text = step + category_title(kufar, parent_id)
     kb = category_keyboard(kufar, parent_id)
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
@@ -30,7 +34,7 @@ async def show_category_picker(target: Message | CallbackQuery, state: FSMContex
 
 
 async def show_region_picker(target: Message | CallbackQuery) -> None:
-    text = "📍 Выберите регион"
+    text = "<b>Шаг 3/5 — Место</b>\n\n📍 Выберите регион"
     kb = region_keyboard()
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=kb)
@@ -68,7 +72,7 @@ async def _finish_edit_location(
 async def _go_new_price(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewAlertStates.waiting_price)
     await callback.message.edit_text(
-        PRICE_INPUT_HINT,
+        "<b>Шаг 4/5 — Цена</b>\n\n" + PRICE_INPUT_HINT,
         parse_mode="HTML",
         reply_markup=skip_keyboard("new:skip_price"),
     )

@@ -299,37 +299,20 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
         params["prc"] = normalize_prc(params["prc"]) or params["prc"]
 
     path_parts = [p for p in parsed.path.split("/") if p]
-    if not params.get("cat") and path_parts:
-        for part in path_parts:
-            if part.isdigit() and len(part) >= 4:
-                params.setdefault("cat", part)
-                break
+    for part in path_parts:
+        if part.startswith("r~"):
+            from bot.locations import region_id_from_slug
+
+            region_id = region_id_from_slug(part[2:])
+            if region_id is not None:
+                params.setdefault("rgn", str(region_id))
+        elif part.isdigit() and len(part) >= 4 and not params.get("cat"):
+            params.setdefault("cat", part)
 
     return query, params
 
 
-from bot.catalog import category_name
-from bot.kufar import build_search_url
-from bot.locations import format_location
-
-
 def format_alert_summary(alert: Alert) -> str:
-    lines = [f"<b>{alert.name}</b>", f"ID: {alert.id}"]
-    if alert.query:
-        lines.append(f"🔎 Запрос: <code>{alert.query}</code>")
-    if alert.params.get("cat"):
-        lines.append(f"📂 {category_name(alert.params['cat'])}")
-    location = format_location(alert.params)
-    if location:
-        lines.append(f"📍 {location}")
-    if alert.params.get("prc"):
-        from bot.price import format_price_display
+    from bot.ui import format_alert_card
 
-        lines.append(f"💰 {format_price_display(alert.params['prc'])}")
-    lines.append("✅ Активна" if alert.active else "⏸ На паузе")
-
-    search_params = {k: v for k, v in alert.params.items() if not str(k).startswith("_")}
-    url = build_search_url(alert.query, **search_params)
-    lines.append(f'🔗 <a href="{url}">Поиск на Kufar</a>')
-
-    return "\n".join(lines)
+    return format_alert_card(alert)

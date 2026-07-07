@@ -5,13 +5,14 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.database import Alert, Database, format_alert_summary, parse_kufar_url
+from bot.database import Alert, Database, parse_kufar_url
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
 from bot.handlers.pickers import show_category_picker, show_region_picker
 from bot.kufar import KufarClient, build_search_url
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
 from bot.seeding import seed_alert
 from bot.states import EditAlertStates
+from bot.ui import alert_detail_keyboard, alerts_list_keyboard, format_alert_card, format_alerts_overview
 from bot.utils.chat import WizardCleaner, track_message
 
 router = Router()
@@ -19,12 +20,12 @@ router = Router()
 CLEAR_HINT = "\n\nОтправьте <code>-</code> чтобы убрать фильтр."
 
 
-def alerts_list_keyboard(alerts: list[Alert]) -> InlineKeyboardMarkup:
+def edit_pick_keyboard(alerts: list[Alert]) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=f"✏️ {a.name} (ID {a.id})", callback_data=f"edit:pick:{a.id}")]
+        [InlineKeyboardButton(text=f"✏️ {a.name}", callback_data=f"edit:pick:{a.id}")]
         for a in alerts
     ]
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="edit:cancel")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="alert:list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -37,7 +38,7 @@ def edit_fields_keyboard(alert_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📂 Категория", callback_data=f"edit:field:{alert_id}:cat")],
             [InlineKeyboardButton(text="📍 Место", callback_data=f"edit:field:{alert_id}:loc")],
             [InlineKeyboardButton(text="💰 Цена", callback_data=f"edit:field:{alert_id}:price")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="edit:back")],
+            [InlineKeyboardButton(text="◀️ К подписке", callback_data=f"alert:view:{alert_id}")],
         ]
     )
 
@@ -59,13 +60,18 @@ async def _finish_edit(
     await cleaner.cleanup_wizard(message.bot, message.chat.id)
     seeded = await _seed_alert(alert, kufar, db) if reseed else 0
     await state.clear()
-    text = f"✅ Подписка обновлена!\n\n{format_alert_summary(alert)}"
+    text = f"✅ <b>Подписка обновлена!</b>\n\n{format_alert_card(alert)}"
     if reseed:
         if seeded >= 0:
-            text += f"\n\nЗагружено {seeded} объявлений — уведомления только о новых."
+            text += f"\n\n📥 Загружено {seeded} объявлений — уведомления только о новых."
         else:
-            text += "\n\nНе удалось обновить список объявлений — проверьте фильтры."
-    sent = await message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU, disable_web_page_preview=True)
+            text += "\n\n⚠️ Не удалось обновить список — проверьте фильтры."
+    sent = await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=alert_detail_keyboard(alert),
+        disable_web_page_preview=True,
+    )
     await track_message(message.from_user.id, sent.message_id)
 
 
@@ -85,7 +91,7 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database) -> None:
             return
         await state.update_data(edit_alert_id=alert_id)
         sent = await message.answer(
-            f"Редактирование подписки:\n\n{format_alert_summary(alert)}\n\nЧто изменить?",
+            f"<b>✏️ Редактирование</b>\n\n{format_alert_card(alert)}\n\nЧто изменить?",
             parse_mode="HTML",
             reply_markup=edit_fields_keyboard(alert_id),
             disable_web_page_preview=True,
@@ -100,8 +106,9 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database) -> None:
         return
 
     sent = await message.answer(
-        "Выберите подписку для редактирования:",
-        reply_markup=alerts_list_keyboard(alerts),
+        "<b>✏️ Редактирование</b>\n\nВыберите подписку:",
+        parse_mode="HTML",
+        reply_markup=edit_pick_keyboard(alerts),
     )
     await track_message(user_id, sent.message_id)
 
@@ -122,8 +129,10 @@ async def edit_back(callback: CallbackQuery, state: FSMContext, db: Database) ->
         await callback.answer()
         return
     await callback.message.edit_text(
-        "Выберите подписку для редактирования:",
+        format_alerts_overview(alerts),
+        parse_mode="HTML",
         reply_markup=alerts_list_keyboard(alerts),
+        disable_web_page_preview=True,
     )
     await callback.answer()
 
@@ -138,7 +147,7 @@ async def edit_pick(callback: CallbackQuery, state: FSMContext, db: Database) ->
 
     await state.update_data(edit_alert_id=alert_id)
     await callback.message.edit_text(
-        f"Редактирование подписки:\n\n{format_alert_summary(alert)}\n\nЧто изменить?",
+        f"<b>✏️ Редактирование</b>\n\n{format_alert_card(alert)}\n\nЧто изменить?",
         parse_mode="HTML",
         reply_markup=edit_fields_keyboard(alert_id),
         disable_web_page_preview=True,
