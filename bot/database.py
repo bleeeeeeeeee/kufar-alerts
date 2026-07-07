@@ -59,6 +59,7 @@ class Alert:
     query: str
     params: dict[str, Any] = field(default_factory=dict)
     active: bool = True
+    created_at: str | None = None
 
     @property
     def search_params(self) -> dict[str, str]:
@@ -156,20 +157,24 @@ class Database:
         name: str,
         query: str,
         params: dict[str, Any] | None = None,
+        *,
+        active: bool = True,
     ) -> Alert:
         params = self._normalize_params(params or {})
         async with self._db() as db:
             cursor = await db.execute(
                 """
-                INSERT INTO alerts (user_id, name, query, params_json)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO alerts (user_id, name, query, params_json, active)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (user_id, name, query, json.dumps(params, ensure_ascii=False)),
+                (user_id, name, query, json.dumps(params, ensure_ascii=False), 1 if active else 0),
             )
             await db.commit()
             alert_id = cursor.lastrowid
         logger.info("Created alert %s for user %s", alert_id, user_id)
-        return Alert(id=alert_id, user_id=user_id, name=name, query=query, params=params)
+        alert = await self.get_alert(alert_id)
+        assert alert is not None
+        return alert
 
     async def get_user_alerts(self, user_id: int) -> list[Alert]:
         async with self._db() as db:
@@ -268,6 +273,7 @@ class Database:
             query=new_query,
             params=new_params,
             active=alert.active,
+            created_at=alert.created_at,
         )
 
     async def clear_seen(self, alert_id: int) -> None:
@@ -321,6 +327,7 @@ class Database:
             query=row["query"] or "",
             params=params,
             active=bool(row["active"]),
+            created_at=row["created_at"],
         )
 
     def _row_to_user(self, row: aiosqlite.Row) -> "User":
@@ -443,6 +450,9 @@ class Database:
         if not user:
             return None
         merged = {**user.settings.to_dict(), **settings}
+        for key, value in list(merged.items()):
+            if value is None:
+                merged.pop(key, None)
         async with self._db() as db:
             await db.execute(
                 "UPDATE users SET settings_json = ? WHERE user_id = ?",

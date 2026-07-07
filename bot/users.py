@@ -8,21 +8,27 @@ from typing import Any
 class UserSettings:
     photos_enabled: bool = True
     auto_clear_chat: bool = True
+    notification_topic_id: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> UserSettings:
         if not data:
             return cls()
+        topic_id = data.get("notification_topic_id")
         return cls(
             photos_enabled=bool(data.get("photos_enabled", True)),
             auto_clear_chat=bool(data.get("auto_clear_chat", True)),
+            notification_topic_id=int(topic_id) if topic_id else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "photos_enabled": self.photos_enabled,
             "auto_clear_chat": self.auto_clear_chat,
         }
+        if self.notification_topic_id is not None:
+            data["notification_topic_id"] = self.notification_topic_id
+        return data
 
 
 @dataclass

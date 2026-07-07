@@ -15,3 +15,7 @@ class EditAlertStates(StatesGroup):
     waiting_query = State()
     waiting_url = State()
     waiting_price = State()
+
+
+class SettingsStates(StatesGroup):
+    waiting_notification_topic = State()

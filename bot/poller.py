@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramForbiddenError
 from bot.database import Alert, Database
 from bot.kufar import KufarClient, format_ad_message, get_image_urls
 from bot.notifier import send_ad_notification
+from bot.time_utils import is_ad_after_alert_created
 
 logger = logging.getLogger(__name__)
 
@@ -92,14 +93,19 @@ class AlertPoller:
         new_ads.sort(key=lambda ad: ad.get("list_time", ""), reverse=True)
 
         notified_ids: list[int] = []
+        skipped_old_ids: list[int] = []
         for ad in new_ads:
             ad_id = int(ad["ad_id"])
+            if not is_ad_after_alert_created(ad, alert.created_at):
+                skipped_old_ids.append(ad_id)
+                continue
             if await self._notify(alert, ad):
                 notified_ids.append(ad_id)
             await asyncio.sleep(0.3)
 
-        if notified_ids:
-            await self.db.mark_seen(alert.id, notified_ids)
+        seen_ids = notified_ids + skipped_old_ids
+        if seen_ids:
+            await self.db.mark_seen(alert.id, seen_ids)
 
         failed = len(new_ads) - len(notified_ids)
         if failed:
@@ -130,6 +136,7 @@ class AlertPoller:
                 text,
                 image_urls,
                 self.kufar.download_image,
+                message_thread_id=db_user.settings.notification_topic_id if db_user else None,
             )
             if error is None:
                 logger.info(

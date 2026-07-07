@@ -10,7 +10,7 @@ from bot.handlers.pickers import show_category_picker
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
 from bot.kufar import KufarClient
 from bot.price import PRICE_INPUT_HINT, parse_price_input
-from bot.seeding import seed_alert
+from bot.seeding import activate_alert_after_seed, seed_alert
 from bot.states import NewAlertStates
 from bot.ui import (
     alert_delete_confirm_keyboard,
@@ -339,9 +339,11 @@ async def confirm_new(
         name=name,
         query=query,
         params=params,
+        active=False,
     )
 
-    seeded = await seed_alert(db, kufar, alert)
+    seeded = await activate_alert_after_seed(db, kufar, alert)
+    alert = await db.get_alert(alert.id, callback.from_user.id) or alert
     seed_note = (
         f"📥 Загружено {seeded} текущих объявлений.\n"
         "Уведомления придут только о <b>новых</b>."
@@ -433,11 +435,14 @@ async def alert_resume_cb(callback: CallbackQuery, db: Database, kufar: KufarCli
     if not alert:
         await callback.answer("Подписка не найдена", show_alert=True)
         return
+    seeded = await seed_alert(db, kufar, alert, clear_first=True)
+    if seeded < 0:
+        await callback.answer("Не удалось синхронизировать перед возобновлением", show_alert=True)
+        return
     if not await db.set_alert_active(alert_id, callback.from_user.id, True):
         await callback.answer("Не удалось возобновить", show_alert=True)
         return
     alert = await db.get_alert(alert_id, callback.from_user.id)
-    seeded = await seed_alert(db, kufar, alert, clear_first=True)
     await _edit_alert_detail(callback, alert)
     note = f", синхронизировано {seeded} объявлений" if seeded >= 0 else ""
     await callback.answer(f"✅ Подписка возобновлена{note}")
@@ -543,9 +548,13 @@ async def cmd_resume(message: Message, db: Database, kufar: KufarClient) -> None
         sent = await message.answer("Подписка не найдена.")
         await track_message(message.from_user.id, sent.message_id)
         return
+    seeded = await seed_alert(db, kufar, alert, clear_first=True)
+    if seeded < 0:
+        sent = await message.answer("Не удалось синхронизировать перед возобновлением.")
+        await track_message(message.from_user.id, sent.message_id)
+        return
     if await db.set_alert_active(alert_id, message.from_user.id, True):
         alert = await db.get_alert(alert_id, message.from_user.id)
-        await seed_alert(db, kufar, alert, clear_first=True)
         await _show_alert_detail(message, alert, message.from_user.id)
     else:
         sent = await message.answer("Не удалось возобновить подписку.")
