@@ -13,11 +13,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings
 from bot.database import Database
-from bot.handlers import admin, alerts, edit, pickers, settings as settings_handlers, start
+from bot.error_handling import ErrorHandlingMiddleware
+from bot.handlers import admin, alerts, edit, notifications, pickers, settings as settings_handlers, start
 from bot.kufar import KufarClient
 from bot.middleware import AccessMiddleware, DedupMiddleware, InjectMiddleware
+from bot.menu import setup_bot_menu
 from bot.poller import AlertPoller
-from bot.topics import bot_topics_enabled
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,9 +38,6 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     db = Database(app_settings.database_path)
     await db.init(admin_user_ids=app_settings.admin_user_ids)
-    pruned = await db.prune_old_seen()
-    if pruned:
-        logger.info("Pruned %s old seen_ads records", pruned)
 
     async with aiohttp.ClientSession() as session:
         kufar = KufarClient(session, search_size=app_settings.search_size)
@@ -48,12 +46,16 @@ async def main() -> None:
         except Exception:
             logger.exception("Failed to load category tree, continuing without it")
 
+        dp.update.outer_middleware(ErrorHandlingMiddleware())
         dp.update.middleware(DedupMiddleware())
         dp.update.middleware(InjectMiddleware(db, kufar, app_settings))
         dp.update.middleware(AccessMiddleware(db, app_settings))
 
+        await setup_bot_menu(bot)
+
         dp.include_router(start.router)
         dp.include_router(settings_handlers.router)
+        dp.include_router(notifications.router)
         dp.include_router(admin.router)
         dp.include_router(alerts.router)
         dp.include_router(edit.router)
@@ -66,14 +68,6 @@ async def main() -> None:
             interval=app_settings.poll_interval,
         )
         poller.start()
-
-        if await bot_topics_enabled(bot):
-            logger.info("Bot private-chat topics are enabled")
-        else:
-            logger.warning(
-                "Bot private-chat topics are disabled — enable Topics in @BotFather "
-                "for notification topics to work"
-            )
 
         logger.info("Bot started")
         await bot.delete_webhook(drop_pending_updates=True)

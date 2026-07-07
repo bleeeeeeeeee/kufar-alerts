@@ -3,12 +3,20 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from bot.access import format_invite_no_access_text, is_start_command
 from bot.config import Settings
 from bot.database import Database
+from bot.error_handling import safe_answer
 from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS
 from bot.navigation import format_home_text, home_row
 from bot.users import User
-from bot.utils.chat import WizardCleaner, send_menu_message, track_message
+from bot.utils.chat import (
+    WizardCleaner,
+    auto_clear_enabled,
+    send_menu_message,
+    send_panel_message,
+    track_message,
+)
 
 router = Router()
 
@@ -31,11 +39,16 @@ HELP_TEXT = """
 
 <b>⚙️ Настройки</b> — профиль, фото в уведомлениях, автоочистка чата
 
-Проверка — каждые ~45 секунд. У каждого пользователя <b>свои</b> подписки и настройки.
+<b>☰ Меню</b> — кнопка слева от поля ввода.
+
+Уведомления приходят сюда — под каждым есть кнопка <b>🗑 Удалить</b>.
+
+Проверка — каждые ~15 сек (интервал подписки настраивается в ⚙️).
 """
 
 
 @router.message(CommandStart())
+@router.message(F.text.func(is_start_command))
 async def cmd_start(
     message: Message,
     state: FSMContext,
@@ -46,17 +59,27 @@ async def cmd_start(
     await state.clear()
 
     if user is None:
-        access_hint = (
-            "открытый — любой может пользоваться"
-            if app_settings.access_mode == "open"
-            else "по приглашению — нужен доступ от администратора"
-        )
+        stored = await db.get_user(message.from_user.id)
+        if stored and not stored.active:
+            sent = await message.answer(
+                format_invite_no_access_text(message.from_user, blocked=True),
+                parse_mode="HTML",
+            )
+            await track_message(message.from_user.id, sent.message_id)
+            return
+
+        access_mode = await db.get_access_mode(app_settings.access_mode)
+        if access_mode == "open":
+            sent = await message.answer(
+                "👋 <b>Kufar Alerts</b>\n\n"
+                "Не удалось открыть доступ. Попробуйте отправить /start ещё раз.",
+                parse_mode="HTML",
+            )
+            await track_message(message.from_user.id, sent.message_id)
+            return
+
         sent = await message.answer(
-            "👋 <b>Kufar Alerts</b>\n\n"
-            f"🔒 Режим: {access_hint}.\n\n"
-            "У вас пока нет доступа. Передайте администратору ваш Telegram ID:\n"
-            f"<code>{message.from_user.id}</code>"
-            + (f"\n📎 @{message.from_user.username}" if message.from_user.username else ""),
+            format_invite_no_access_text(message.from_user),
             parse_mode="HTML",
         )
         await track_message(message.from_user.id, sent.message_id)
@@ -65,11 +88,15 @@ async def cmd_start(
     alerts = await db.get_user_alerts(message.from_user.id)
     active = sum(1 for a in alerts if a.active)
 
-    sent = await send_menu_message(
+    home_text = format_home_text(user.display_name, len(alerts), active)
+    home_text += "\n\n🔔 Уведомления приходят сюда — под каждым есть кнопка <b>🗑 Удалить</b>."
+
+    await send_menu_message(
         message,
         user,
-        format_home_text(user.display_name, len(alerts), active),
+        home_text,
         state,
+        db,
         parse_mode="HTML",
         reply_markup=MAIN_MENU,
     )
@@ -83,10 +110,10 @@ async def nav_home(
     user: User | None,
 ) -> None:
     if not user:
-        await callback.answer("Нет доступа", show_alert=True)
+        await safe_answer(callback, "Нет доступа", show_alert=True)
         return
 
-    cleaner = WizardCleaner(state, user)
+    cleaner = WizardCleaner(state, user, db)
     await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id, callback.from_user.id)
     await state.clear()
 
@@ -94,24 +121,37 @@ async def nav_home(
     active = sum(1 for a in alerts if a.active)
     text = format_home_text(user.display_name, len(alerts), active)
 
-    try:
-        await callback.message.delete()
-    except Exception:
+    if auto_clear_enabled(user):
         try:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.delete()
         except Exception:
-            pass
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
-    sent = await callback.message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU)
-    await track_message(callback.from_user.id, sent.message_id)
-    await callback.answer()
+    await send_panel_message(
+        callback.message.bot,
+        callback.from_user.id,
+        callback.from_user.id,
+        user,
+        db,
+        text,
+        cleanup=True,
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU,
+    )
+    await safe_answer(callback)
 
 
 @router.message(Command("help"))
 @router.message(F.text == MAIN_MENU_BUTTONS["help"])
-async def cmd_help(message: Message, user: User | None, state) -> None:
+async def cmd_help(message: Message, user: User | None, state: FSMContext, db: Database) -> None:
     if user is None:
-        sent = await message.answer("Сначала получите доступ — отправьте /start.")
+        sent = await message.answer(
+            format_invite_no_access_text(message.from_user),
+            parse_mode="HTML",
+        )
         await track_message(message.from_user.id, sent.message_id)
         return
     await send_menu_message(
@@ -119,6 +159,7 @@ async def cmd_help(message: Message, user: User | None, state) -> None:
         user,
         HELP_TEXT,
         state,
+        db,
         parse_mode="HTML",
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[home_row()]),
@@ -126,17 +167,24 @@ async def cmd_help(message: Message, user: User | None, state) -> None:
 
 
 @router.message(Command("status"))
-async def cmd_status(message: Message, db: Database, user: User | None, app_settings: Settings) -> None:
+async def cmd_status(
+    message: Message,
+    db: Database,
+    user: User | None,
+    app_settings: Settings,
+    state: FSMContext,
+) -> None:
     if user is None:
         sent = await message.answer("Нет доступа. /start — ваш ID для администратора.")
         await track_message(message.from_user.id, sent.message_id)
         return
     alerts = await db.get_user_alerts(message.from_user.id)
     active = sum(1 for a in alerts if a.active)
+    poll = user.settings.poll_interval or app_settings.poll_interval
     if not alerts:
         text = (
             f"📊 Подписок нет. Бот готов к работе.\n"
-            f"Проверка: каждые ~{app_settings.poll_interval} сек, "
+            f"Проверка: каждые ~{poll} сек, "
             f"последние {app_settings.search_size} объявлений по каждой подписке."
         )
     else:
@@ -145,8 +193,7 @@ async def cmd_status(message: Message, db: Database, user: User | None, app_sett
             f"Подписок: {len(alerts)}\n"
             f"Активных: {active}\n"
             f"На паузе: {len(alerts) - active}\n\n"
-            f"⏱ Интервал: ~{app_settings.poll_interval} сек\n"
-            f"📥 Глубина поиска: {app_settings.search_size} последних объявлений"
+            f"⏱ Интервал: ~{poll} сек\n"
+            f"📥 Глубина поиска: {app_settings.search_size} объявлений"
         )
-    sent = await message.answer(text, parse_mode="HTML")
-    await track_message(message.from_user.id, sent.message_id)
+    await send_menu_message(message, user, text, state, db, parse_mode="HTML")
