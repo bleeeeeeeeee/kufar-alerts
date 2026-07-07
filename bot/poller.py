@@ -119,6 +119,9 @@ class AlertPoller:
             f"{format_ad_message(ad, self.kufar)}"
         )
         image_urls = get_image_urls(ad)
+        db_user = await self.db.get_user(alert.user_id)
+        if db_user and not db_user.settings.photos_enabled:
+            image_urls = []
 
         try:
             error = await send_ad_notification(

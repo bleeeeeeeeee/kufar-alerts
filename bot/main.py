@@ -13,9 +13,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings
 from bot.database import Database
-from bot.handlers import alerts, edit, pickers, start
+from bot.handlers import admin, alerts, edit, pickers, settings, start
 from bot.kufar import KufarClient
-from bot.middleware import DedupMiddleware, InjectMiddleware
+from bot.middleware import AccessMiddleware, DedupMiddleware, InjectMiddleware
 from bot.poller import AlertPoller
 
 logging.basicConfig(
@@ -35,7 +35,7 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
     db = Database(settings.database_path)
-    await db.init()
+    await db.init(admin_user_ids=settings.admin_user_ids)
     pruned = await db.prune_old_seen()
     if pruned:
         logger.info("Pruned %s old seen_ads records", pruned)
@@ -48,9 +48,12 @@ async def main() -> None:
             logger.exception("Failed to load category tree, continuing without it")
 
         dp.update.middleware(DedupMiddleware())
-        dp.update.middleware(InjectMiddleware(db, kufar))
+        dp.update.middleware(InjectMiddleware(db, kufar, settings))
+        dp.update.middleware(AccessMiddleware(db, settings))
 
         dp.include_router(start.router)
+        dp.include_router(settings.router)
+        dp.include_router(admin.router)
         dp.include_router(alerts.router)
         dp.include_router(edit.router)
         dp.include_router(pickers.router)

@@ -34,6 +34,20 @@ CREATE TABLE IF NOT EXISTS seen_ads (
 CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
 CREATE INDEX IF NOT EXISTS idx_seen_ads_alert ON seen_ads(alert_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    role TEXT NOT NULL DEFAULT 'user',
+    active INTEGER NOT NULL DEFAULT 1,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
 """
 
 
@@ -66,7 +80,7 @@ class Database:
         self.path = path
         self._ready = False
 
-    async def init(self) -> None:
+    async def init(self, admin_user_ids: tuple[int, ...] = ()) -> None:
         db_path = Path(self.path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Database path: %s (exists=%s)", self.path, db_path.exists())
@@ -78,9 +92,36 @@ class Database:
             await db.executescript(SCHEMA)
             await db.commit()
 
+        await self._bootstrap_users(admin_user_ids)
+
         alerts, seen = await self.stats()
-        logger.info("Database ready: %s alerts, %s seen records", alerts, seen)
+        users = await self.count_users()
+        logger.info("Database ready: %s alerts, %s seen, %s users", alerts, seen, users)
         self._ready = True
+
+    async def count_users(self) -> int:
+        async with self._db() as db:
+            row = await (await db.execute("SELECT COUNT(*) FROM users")).fetchone()
+        return int(row[0])
+
+    async def _bootstrap_users(self, admin_user_ids: tuple[int, ...]) -> None:
+        async with self._db() as db:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO users (user_id, active)
+                SELECT DISTINCT user_id, 1 FROM alerts
+                """
+            )
+            for admin_id in admin_user_ids:
+                await db.execute(
+                    """
+                    INSERT INTO users (user_id, role, active)
+                    VALUES (?, 'admin', 1)
+                    ON CONFLICT(user_id) DO UPDATE SET role = 'admin', active = 1
+                    """,
+                    (admin_id,),
+                )
+            await db.commit()
 
     async def stats(self) -> tuple[int, int]:
         async with self._db() as db:
@@ -141,7 +182,16 @@ class Database:
 
     async def get_active_alerts(self) -> list[Alert]:
         async with self._db() as db:
-            cursor = await db.execute("SELECT * FROM alerts WHERE active = 1")
+            cursor = await db.execute(
+                """
+                SELECT a.* FROM alerts a
+                WHERE a.active = 1
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id = a.user_id)
+                    OR EXISTS (SELECT 1 FROM users u WHERE u.user_id = a.user_id AND u.active = 1)
+                  )
+                """
+            )
             rows = await cursor.fetchall()
         return [self._row_to_alert(row) for row in rows]
 
@@ -272,6 +322,138 @@ class Database:
             params=params,
             active=bool(row["active"]),
         )
+
+    def _row_to_user(self, row: aiosqlite.Row) -> "User":
+        from bot.users import User, UserSettings
+
+        return User(
+            user_id=row["user_id"],
+            username=row["username"],
+            first_name=row["first_name"],
+            last_name=row["last_name"],
+            role=row["role"] or "user",
+            active=bool(row["active"]),
+            settings=UserSettings.from_dict(json.loads(row["settings_json"] or "{}")),
+        )
+
+    async def get_user(self, user_id: int) -> "User | None":
+        async with self._db() as db:
+            cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+        return self._row_to_user(row) if row else None
+
+    async def list_users(self, *, active_only: bool = False) -> list["User"]:
+        query = "SELECT * FROM users"
+        if active_only:
+            query += " WHERE active = 1"
+        query += " ORDER BY role DESC, created_at ASC"
+        async with self._db() as db:
+            cursor = await db.execute(query)
+            rows = await cursor.fetchall()
+        return [self._row_to_user(row) for row in rows]
+
+    async def count_user_alerts(self, user_id: int) -> int:
+        async with self._db() as db:
+            row = await (
+                await db.execute("SELECT COUNT(*) FROM alerts WHERE user_id = ?", (user_id,))
+            ).fetchone()
+        return int(row[0])
+
+    async def upsert_user(
+        self,
+        user_id: int,
+        *,
+        username: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        role: str | None = None,
+        active: bool | None = None,
+    ) -> "User":
+        existing = await self.get_user(user_id)
+        async with self._db() as db:
+            if existing:
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET username = COALESCE(?, username),
+                        first_name = COALESCE(?, first_name),
+                        last_name = COALESCE(?, last_name),
+                        role = COALESCE(?, role),
+                        active = COALESCE(?, active),
+                        last_seen_at = datetime('now')
+                    WHERE user_id = ?
+                    """,
+                    (
+                        username,
+                        first_name,
+                        last_name,
+                        role,
+                        None if active is None else (1 if active else 0),
+                        user_id,
+                    ),
+                )
+            else:
+                await db.execute(
+                    """
+                    INSERT INTO users (user_id, username, first_name, last_name, role, active, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                    """,
+                    (
+                        user_id,
+                        username,
+                        first_name,
+                        last_name,
+                        role or "user",
+                        1 if active is None else (1 if active else 0),
+                    ),
+                )
+            await db.commit()
+        user = await self.get_user(user_id)
+        assert user is not None
+        return user
+
+    async def touch_user(self, user_id: int, **profile: str | None) -> None:
+        await self.upsert_user(
+            user_id,
+            username=profile.get("username"),
+            first_name=profile.get("first_name"),
+            last_name=profile.get("last_name"),
+        )
+
+    async def set_user_active(self, user_id: int, active: bool) -> bool:
+        async with self._db() as db:
+            cursor = await db.execute(
+                "UPDATE users SET active = ? WHERE user_id = ?",
+                (1 if active else 0, user_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def set_user_role(self, user_id: int, role: str) -> bool:
+        async with self._db() as db:
+            cursor = await db.execute(
+                "UPDATE users SET role = ? WHERE user_id = ?",
+                (role, user_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def update_user_settings(self, user_id: int, settings: dict[str, Any]) -> "User | None":
+        user = await self.get_user(user_id)
+        if not user:
+            return None
+        merged = {**user.settings.to_dict(), **settings}
+        async with self._db() as db:
+            await db.execute(
+                "UPDATE users SET settings_json = ? WHERE user_id = ?",
+                (json.dumps(merged, ensure_ascii=False), user_id),
+            )
+            await db.commit()
+        return await self.get_user(user_id)
+
+    async def is_user_allowed(self, user_id: int) -> bool:
+        user = await self.get_user(user_id)
+        return user is not None and user.active
 
 
 def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
