@@ -38,5 +38,5 @@ def get_settings() -> Settings:
         bot_token=token,
         poll_interval=max(15, int(os.getenv("POLL_INTERVAL", "45"))),
         database_path=_default_database_path(),
-        search_size=min(50, max(5, int(os.getenv("SEARCH_SIZE", "30")))),
+        search_size=min(50, max(10, int(os.getenv("SEARCH_SIZE", "50")))),
     )

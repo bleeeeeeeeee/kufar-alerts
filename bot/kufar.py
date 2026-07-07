@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 from typing import Any
 from urllib.parse import urlencode
@@ -51,6 +52,25 @@ class KufarClient:
             raise
 
         return data.get("ads") or []
+
+    async def download_image(self, url: str) -> bytes | None:
+        headers = {"User-Agent": USER_AGENT}
+        try:
+            async with self.session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                content_type = resp.headers.get("Content-Type", "")
+                if content_type and not content_type.startswith("image/"):
+                    return None
+                data = await resp.read()
+                return data if len(data) > 500 else None
+        except Exception:
+            logger.debug("Failed to download image %s", url, exc_info=True)
+            return None
 
     async def load_category_tree(self) -> dict[int, str]:
         if self._categories is not None:
@@ -110,22 +130,36 @@ class KufarClient:
 
 
 def get_image_url(image: dict[str, Any]) -> str | None:
+    urls = get_image_urls_from_image(image)
+    return urls[0] if urls else None
+
+
+def get_image_urls_from_image(image: dict[str, Any]) -> list[str]:
     if not image:
-        return None
+        return []
 
     if image.get("yams_storage") and image.get("id") and image["id"] != "0000":
         image_id = str(image["id"])
-        return (
+        return [
             f"https://yams.kufar.by/api/v1/kufar-ads/images/"
             f"{image_id[:2]}/{image_id}.jpg?rule=gallery"
-        )
+        ]
 
     path = image.get("path") or ""
     if path:
         filename = path.split("/")[-1]
-        return f"https://content.kufar.by/gallery/ad/{filename}"
+        return [f"https://content.kufar.by/gallery/ad/{filename}"]
 
-    return None
+    return []
+
+
+def get_image_urls(ad: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    for image in ad.get("images") or []:
+        for url in get_image_urls_from_image(image):
+            if url not in urls:
+                urls.append(url)
+    return urls
 
 
 def format_price(ad: dict[str, Any]) -> str:
@@ -147,11 +181,11 @@ def get_param_value(ad: dict[str, Any], param_name: str) -> str:
 
 
 def format_ad_message(ad: dict[str, Any], kufar: KufarClient) -> str:
-    subject = ad.get("subject") or "Без названия"
-    price = format_price(ad)
+    subject = html.escape(ad.get("subject") or "Без названия")
+    price = html.escape(format_price(ad))
     link = ad.get("ad_link") or f"https://www.kufar.by/item/{ad.get('ad_id')}"
-    region = get_param_value(ad, "region") or get_param_value(ad, "area")
-    category = get_param_value(ad, "category")
+    region = html.escape(get_param_value(ad, "region") or get_param_value(ad, "area"))
+    category = html.escape(get_param_value(ad, "category"))
 
     lines = [
         f"<b>{subject}</b>",

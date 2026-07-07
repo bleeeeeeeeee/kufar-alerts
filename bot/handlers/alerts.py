@@ -12,6 +12,7 @@ from bot.kufar import KufarClient, build_search_url
 from bot.locations import format_location
 from bot.handlers.pickers import show_category_picker
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
+from bot.seeding import seed_alert
 from bot.states import NewAlertStates
 from bot.utils.chat import WizardCleaner, track_message
 
@@ -35,6 +36,22 @@ def confirm_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отмена", callback_data="new:cancel")],
         ]
     )
+
+
+def alerts_actions_keyboard(alerts: list) -> InlineKeyboardMarkup:
+    rows = []
+    for alert in alerts:
+        if alert.active:
+            rows.append([
+                InlineKeyboardButton(text=f"⏸ {alert.name}", callback_data=f"alert:pause:{alert.id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"alert:delete:{alert.id}"),
+            ])
+        else:
+            rows.append([
+                InlineKeyboardButton(text=f"▶️ {alert.name}", callback_data=f"alert:resume:{alert.id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"alert:delete:{alert.id}"),
+            ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _show_draft(message: Message, state: FSMContext, cleaner: WizardCleaner) -> None:
@@ -199,13 +216,12 @@ async def confirm_new(
         params=params,
     )
 
-    try:
-        ads = await kufar.search(**alert.search_params)
-        ad_ids = [int(ad["ad_id"]) for ad in ads if ad.get("ad_id")]
-        await db.seed_seen(alert.id, ad_ids)
-        seeded = len(ad_ids)
-    except Exception:
-        seeded = 0
+    seeded = await seed_alert(db, kufar, alert)
+    seed_note = (
+        f"Загружено {seeded} текущих объявлений — уведомления только о новых."
+        if seeded >= 0
+        else "Не удалось загрузить текущие объявления — возможен всплеск уведомлений."
+    )
 
     await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id)
     await state.clear()
@@ -216,8 +232,7 @@ async def confirm_new(
         pass
 
     sent = await callback.message.answer(
-        f"✅ Подписка создана!\n\n{format_alert_summary(alert)}\n\n"
-        f"Загружено {seeded} текущих объявлений — уведомления только о новых.",
+        f"✅ Подписка создана!\n\n{format_alert_summary(alert)}\n\n{seed_note}",
         parse_mode="HTML",
         reply_markup=MAIN_MENU,
         disable_web_page_preview=True,
@@ -238,7 +253,12 @@ async def cmd_list(message: Message, db: Database) -> None:
     text = f"<b>Ваши подписки ({len(alerts)}):</b>\n\n" + "\n\n".join(
         format_alert_summary(alert) for alert in alerts
     )
-    sent = await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    sent = await message.answer(
+        text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=alerts_actions_keyboard(alerts),
+    )
     await track_message(message.from_user.id, sent.message_id)
 
 
@@ -274,15 +294,38 @@ async def cmd_resume(message: Message, db: Database, kufar: KufarClient) -> None
         return
 
     if await db.set_alert_active(alert_id, message.from_user.id, True):
-        try:
-            ads = await kufar.search(**alert.search_params)
-            ad_ids = [int(ad["ad_id"]) for ad in ads if ad.get("ad_id")]
-            await db.seed_seen(alert.id, ad_ids)
-        except Exception:
-            pass
-        sent = await message.answer(f"✅ Подписка {alert_id} возобновлена.")
+        seeded = await seed_alert(db, kufar, alert, clear_first=True)
+        note = f" Загружено {seeded} объявлений." if seeded >= 0 else ""
+        sent = await message.answer(f"✅ Подписка {alert_id} возобновлена.{note}")
     else:
         sent = await message.answer("Не удалось возобновить подписку.")
+    await track_message(message.from_user.id, sent.message_id)
+
+
+@router.message(Command("resync"))
+async def cmd_resync(message: Message, db: Database, kufar: KufarClient) -> None:
+    """Re-seed seen ads without changing filters — fixes missed notifications."""
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        sent = await message.answer("Использование: /resync ID\n\nСбрасывает «просмотренные» и загружает текущие объявления заново.")
+        await track_message(message.from_user.id, sent.message_id)
+        return
+
+    alert_id = int(parts[1])
+    alert = await db.get_alert(alert_id, message.from_user.id)
+    if not alert:
+        sent = await message.answer("Подписка не найдена.")
+        await track_message(message.from_user.id, sent.message_id)
+        return
+
+    seeded = await seed_alert(db, kufar, alert, clear_first=True)
+    if seeded >= 0:
+        sent = await message.answer(
+            f"🔄 Подписка {alert_id} синхронизирована.\n"
+            f"Помечено {seeded} текущих объявлений — уведомления только о новых."
+        )
+    else:
+        sent = await message.answer("Не удалось синхронизировать. Проверьте фильтры подписки.")
     await track_message(message.from_user.id, sent.message_id)
 
 
@@ -300,3 +343,36 @@ async def cmd_delete(message: Message, db: Database) -> None:
     else:
         sent = await message.answer("Подписка не найдена.")
     await track_message(message.from_user.id, sent.message_id)
+
+
+@router.callback_query(F.data.startswith("alert:pause:"))
+async def alert_pause_cb(callback: CallbackQuery, db: Database) -> None:
+    alert_id = int(callback.data.split(":")[-1])
+    if await db.set_alert_active(alert_id, callback.from_user.id, False):
+        await callback.answer(f"⏸ Подписка {alert_id} на паузе")
+    else:
+        await callback.answer("Подписка не найдена", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("alert:resume:"))
+async def alert_resume_cb(callback: CallbackQuery, db: Database, kufar: KufarClient) -> None:
+    alert_id = int(callback.data.split(":")[-1])
+    alert = await db.get_alert(alert_id, callback.from_user.id)
+    if not alert:
+        await callback.answer("Подписка не найдена", show_alert=True)
+        return
+    if await db.set_alert_active(alert_id, callback.from_user.id, True):
+        seeded = await seed_alert(db, kufar, alert, clear_first=True)
+        note = f", загружено {seeded} объявлений" if seeded >= 0 else ""
+        await callback.answer(f"✅ Подписка {alert_id} возобновлена{note}")
+    else:
+        await callback.answer("Не удалось возобновить", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("alert:delete:"))
+async def alert_delete_cb(callback: CallbackQuery, db: Database) -> None:
+    alert_id = int(callback.data.split(":")[-1])
+    if await db.delete_alert(alert_id, callback.from_user.id):
+        await callback.answer(f"🗑 Подписка {alert_id} удалена")
+    else:
+        await callback.answer("Подписка не найдена", show_alert=True)

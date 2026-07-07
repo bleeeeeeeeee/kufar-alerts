@@ -10,6 +10,7 @@ from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard
 from bot.handlers.pickers import show_category_picker, show_region_picker
 from bot.kufar import KufarClient, build_search_url
 from bot.price import PRICE_INPUT_HINT, format_price_display, parse_price_input
+from bot.seeding import seed_alert
 from bot.states import EditAlertStates
 from bot.utils.chat import WizardCleaner, track_message
 
@@ -42,14 +43,7 @@ def edit_fields_keyboard(alert_id: int) -> InlineKeyboardMarkup:
 
 
 async def _seed_alert(alert: Alert, kufar: KufarClient, db: Database) -> int:
-    await db.clear_seen(alert.id)
-    try:
-        ads = await kufar.search(**alert.search_params)
-        ad_ids = [int(ad["ad_id"]) for ad in ads if ad.get("ad_id")]
-        await db.seed_seen(alert.id, ad_ids)
-        return len(ad_ids)
-    except Exception:
-        return 0
+    return await seed_alert(db, kufar, alert, clear_first=True)
 
 
 async def _finish_edit(
@@ -67,7 +61,10 @@ async def _finish_edit(
     await state.clear()
     text = f"✅ Подписка обновлена!\n\n{format_alert_summary(alert)}"
     if reseed:
-        text += f"\n\nЗагружено {seeded} объявлений — уведомления только о новых."
+        if seeded >= 0:
+            text += f"\n\nЗагружено {seeded} объявлений — уведомления только о новых."
+        else:
+            text += "\n\nНе удалось обновить список объявлений — проверьте фильтры."
     sent = await message.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU, disable_web_page_preview=True)
     await track_message(message.from_user.id, sent.message_id)
 

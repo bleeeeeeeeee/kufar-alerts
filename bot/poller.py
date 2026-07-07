@@ -4,9 +4,11 @@ import asyncio
 import logging
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError
 
 from bot.database import Alert, Database
-from bot.kufar import KufarClient, format_ad_message, get_image_url
+from bot.kufar import KufarClient, format_ad_message, get_image_urls
+from bot.notifier import send_ad_notification
 
 logger = logging.getLogger(__name__)
 
@@ -54,58 +56,103 @@ class AlertPoller:
         if not alerts:
             return
 
+        total_new = 0
+        total_sent = 0
+
         for alert in alerts:
             try:
-                await self._check_alert(alert)
+                new_count, sent_count = await self._check_alert(alert)
+                total_new += new_count
+                total_sent += sent_count
             except Exception:
                 logger.exception("Failed to check alert %s", alert.id)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
 
-    async def _check_alert(self, alert: Alert) -> None:
+        if total_new:
+            logger.info(
+                "Poll done: %s alerts, %s new ads, %s notifications sent",
+                len(alerts),
+                total_new,
+                total_sent,
+            )
+
+    async def _check_alert(self, alert: Alert) -> tuple[int, int]:
         ads = await self.kufar.search(**alert.search_params)
         if not ads:
-            return
+            return 0, 0
 
         ad_ids = [int(ad["ad_id"]) for ad in ads if ad.get("ad_id")]
         new_ids = await self.db.filter_unseen(alert.id, ad_ids)
         if not new_ids:
-            return
+            return 0, 0
 
         new_id_set = set(new_ids)
         new_ads = [ad for ad in ads if int(ad.get("ad_id", 0)) in new_id_set]
         new_ads.sort(key=lambda ad: ad.get("list_time", ""), reverse=True)
 
+        notified_ids: list[int] = []
         for ad in new_ads:
-            await self._notify(alert, ad)
-            await asyncio.sleep(0.5)
+            ad_id = int(ad["ad_id"])
+            if await self._notify(alert, ad):
+                notified_ids.append(ad_id)
+            await asyncio.sleep(0.3)
 
-        await self.db.mark_seen(alert.id, new_ids)
+        if notified_ids:
+            await self.db.mark_seen(alert.id, notified_ids)
 
-    async def _notify(self, alert: Alert, ad: dict) -> None:
+        failed = len(new_ads) - len(notified_ids)
+        if failed:
+            logger.warning(
+                "Alert %s: %s/%s notifications failed, will retry next poll",
+                alert.id,
+                failed,
+                len(new_ads),
+            )
+
+        return len(new_ads), len(notified_ids)
+
+    async def _notify(self, alert: Alert, ad: dict) -> bool:
         text = (
             f"🆕 <b>Новое объявление</b>\n"
             f"Подписка: <i>{alert.name}</i>\n\n"
             f"{format_ad_message(ad, self.kufar)}"
         )
-        image_url = None
-        images = ad.get("images") or []
-        if images:
-            image_url = get_image_url(images[0])
+        image_urls = get_image_urls(ad)
 
         try:
-            if image_url:
-                await self.bot.send_photo(
+            error = await send_ad_notification(
+                self.bot,
+                alert.user_id,
+                text,
+                image_urls,
+                self.kufar.download_image,
+            )
+            if error is None:
+                logger.info(
+                    "Notified user %s about ad %s (alert %s)",
                     alert.user_id,
-                    photo=image_url,
-                    caption=text,
-                    parse_mode="HTML",
+                    ad.get("ad_id"),
+                    alert.id,
                 )
-            else:
-                await self.bot.send_message(
-                    alert.user_id,
-                    text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=False,
-                )
+                return True
+
+            logger.error(
+                "All delivery methods failed for user %s ad %s (alert %s)",
+                alert.user_id,
+                ad.get("ad_id"),
+                alert.id,
+            )
+            return False
+
+        except TelegramForbiddenError:
+            logger.warning("User %s blocked the bot, pausing alert %s", alert.user_id, alert.id)
+            await self.db.set_alert_active(alert.id, alert.user_id, False)
+            return False
         except Exception:
-            logger.exception("Failed to notify user %s about ad %s", alert.user_id, ad.get("ad_id"))
+            logger.exception(
+                "Failed to notify user %s about ad %s (alert %s)",
+                alert.user_id,
+                ad.get("ad_id"),
+                alert.id,
+            )
+            return False

@@ -36,11 +36,16 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     db = Database(settings.database_path)
     await db.init()
-    await db.prune_old_seen()
+    pruned = await db.prune_old_seen()
+    if pruned:
+        logger.info("Pruned %s old seen_ads records", pruned)
 
     async with aiohttp.ClientSession() as session:
         kufar = KufarClient(session, search_size=settings.search_size)
-        await kufar.load_category_tree()
+        try:
+            await kufar.load_category_tree()
+        except Exception:
+            logger.exception("Failed to load category tree, continuing without it")
 
         dp.update.middleware(DedupMiddleware())
         dp.update.middleware(InjectMiddleware(db, kufar))
