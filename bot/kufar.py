@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 import aiohttp
 
 from bot.catalog import set_category_names
+from bot.price import prc_for_website
 
 logger = logging.getLogger(__name__)
 
@@ -168,5 +169,11 @@ def build_search_url(query: str = "", **params: str) -> str:
     search_params: dict[str, str] = {"sort": "lst.d"}
     if query:
         search_params["query"] = query
-    search_params.update({k: v for k, v in params.items() if v})
+    for key, value in params.items():
+        if not value:
+            continue
+        if key == "prc":
+            value = prc_for_website(value) or ""
+        if value:
+            search_params[key] = value
     return f"https://www.kufar.by/l?{urlencode(search_params)}"

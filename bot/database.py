@@ -48,7 +48,15 @@ class Alert:
 
     @property
     def search_params(self) -> dict[str, str]:
+        from bot.price import prc_for_api
+
         params = {k: v for k, v in self.params.items() if not str(k).startswith("_")}
+        if "prc" in params:
+            api_prc = prc_for_api(params["prc"])
+            if api_prc:
+                params["prc"] = api_prc
+            else:
+                params.pop("prc")
         params["query"] = self.query
         return params
 
@@ -271,6 +279,11 @@ def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
             query = values[0]
         elif key not in skip_keys:
             params[key] = values[0]
+
+    if params.get("prc"):
+        from bot.price import prc_from_website
+
+        params["prc"] = prc_from_website(params["prc"])
 
     path_parts = [p for p in parsed.path.split("/") if p]
     if not params.get("cat") and path_parts:
