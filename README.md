@@ -47,6 +47,33 @@ docker compose up -d --build
 
 ## Деплой 24/7
 
+### Webhook на PythonAnywhere
+
+PythonAnywhere подходит, если вы хотите использовать вебхуки и не запускать polling напрямую. В этом режиме бот получает обновления от Telegram через HTTPS и ваш сервер работает как веб-приложение.
+
+1. Установите переменные окружения:
+   - `BOT_TOKEN` — токен бота
+   - `WEBHOOK_URL` — публичный HTTPS URL на PythonAnywhere, например `https://yourusername.pythonanywhere.com/webhook/telegram`
+   - `WEBHOOK_ENABLED` — `1` или `true`
+   - `WEBHOOK_PATH` — путь webhook-а (`/webhook/telegram` по умолчанию)
+   - `WEBHOOK_SECRET_TOKEN` — опциональный секретный токен для защиты запроса
+   - `DATABASE_PATH` — путь до базы данных, например `data/kufar_alerts.db`
+   - `ADMIN_USER_IDS` — ID администраторов через запятую
+
+2. В PythonAnywhere создайте Web app Python 3.12 и укажите WSGI файл `wsgi.py` из корня проекта.
+
+3. Убедитесь, что в `requirements.txt` есть `Flask` и установите зависимости.
+
+4. Запустите приложение, чтобы Telegram автоматически установил webhook и бот начал работать.
+
+> На бесплатном PythonAnywhere нужно, чтобы сайт был доступен по HTTPS. PythonAnywhere уже обеспечивает HTTPS, поэтому дополнительный SSL не требуется.
+
+### Где использовать polling, а где webhook
+
+- `polling` подходит для Railway/Render/Koyeb и других постоянных контейнеров.
+- `webhook` подходит для PythonAnywhere или любых WSGI-hosting, где Telegram шлёт обновления в ваш URL.
+
+
 ### Railway (рекомендуется)
 
 1. [railway.app/new](https://railway.app/new) → Deploy from GitHub → `kufar-alerts`

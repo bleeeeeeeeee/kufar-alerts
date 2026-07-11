@@ -17,6 +17,10 @@ class Settings:
     search_size: int
     admin_user_ids: tuple[int, ...]
     access_mode: str  # open | invite
+    webhook_enabled: bool
+    webhook_url: str | None
+    webhook_path: str
+    webhook_secret_token: str | None
 
 
 def _parse_admin_ids(raw: str) -> tuple[int, ...]:
@@ -49,6 +53,22 @@ def get_settings() -> Settings:
     if access_mode not in ("open", "invite"):
         access_mode = "invite"
 
+    webhook_url = os.getenv("WEBHOOK_URL", "").strip()
+    webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if webhook_url:
+        webhook_enabled = True
+
+    webhook_path = os.getenv("WEBHOOK_PATH", "/webhook/telegram").strip()
+    if not webhook_path.startswith("/"):
+        webhook_path = f"/{webhook_path}"
+
+    webhook_secret_token = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip() or None
+
     return Settings(
         bot_token=token,
         poll_interval=max(15, int(os.getenv("POLL_INTERVAL", "45"))),
@@ -56,4 +76,8 @@ def get_settings() -> Settings:
         search_size=min(50, max(10, int(os.getenv("SEARCH_SIZE", "50")))),
         admin_user_ids=_parse_admin_ids(os.getenv("ADMIN_USER_IDS", "")),
         access_mode=access_mode,
+        webhook_enabled=webhook_enabled,
+        webhook_url=webhook_url or None,
+        webhook_path=webhook_path,
+        webhook_secret_token=webhook_secret_token,
     )

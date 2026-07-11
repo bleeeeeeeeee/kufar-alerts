@@ -4,3 +4,4 @@ aiosqlite==0.21.0
 python-dotenv==1.1.0
 pydantic==2.10.6
 typing-extensions==4.12.2
+Flask==3.0.0
