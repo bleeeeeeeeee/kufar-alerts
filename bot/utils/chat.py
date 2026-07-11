@@ -230,12 +230,28 @@ class WizardCleaner:
         await try_delete(message.bot, message.chat.id, message.message_id)
 
     async def cleanup_wizard(self, bot: Bot, chat_id: int, user_id: int) -> None:
+        # Centralized cleanup: remove panel message(s) and tracked wizard messages.
+        # This ensures both the persistent UI panel and any temporary wizard
+        # messages are removed in a consistent way.
         data = await self.state.get_data()
         wizard_ids = data.get("wizard_ids", [])
         if auto_clear_enabled(self.user):
-            for mid in wizard_ids:
-                await try_delete(bot, chat_id, mid)
-                await untrack_message(user_id, mid)
+            # delete_panel_messages will remove the stored panel and all tracked
+            # user messages for this user; keep=None means remove all.
+            try:
+                await delete_panel_messages(bot, chat_id, user_id, self.user, self.db, keep=None)
+            except Exception:
+                # Fallback: individually delete wizard ids if panel cleanup fails
+                for mid in wizard_ids:
+                    try:
+                        await try_delete(bot, chat_id, mid)
+                    except Exception:
+                        pass
+                    try:
+                        await untrack_message(user_id, mid)
+                    except Exception:
+                        pass
+        # Always clear wizard ids from state to avoid stale references
         await self.state.update_data(wizard_ids=[])
 
     async def begin(self, message: Message, state: FSMContext | None = None) -> None:

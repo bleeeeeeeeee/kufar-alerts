@@ -335,6 +335,11 @@ async def pick_extra_filters(
     params = dict(data.get("params", {}))
 
     if action in {"done", "skip"}:
+        # If user chose to skip, remove any extra-filter keys from params.
+        if action == "skip":
+            from bot.search_filters import is_extra_filter_key
+
+            params = {k: v for k, v in params.items() if not is_extra_filter_key(k)}
         await _finish_extra_filters(callback, state, db, kufar, params, user)
         await callback.answer()
         return
