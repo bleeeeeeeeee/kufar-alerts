@@ -21,6 +21,8 @@ from bot.middleware import AccessMiddleware, DedupMiddleware, InjectMiddleware
 from bot.menu import setup_bot_menu
 from bot.poller import AlertPoller
 
+from bot.web import run_web_in_thread
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    run_web_in_thread()
+    
     app_settings = get_settings()
     Path(app_settings.database_path).parent.mkdir(parents=True, exist_ok=True)
 
