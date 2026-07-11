@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from bot.navigation import home_row
