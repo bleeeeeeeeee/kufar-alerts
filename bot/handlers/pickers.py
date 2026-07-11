@@ -8,6 +8,8 @@ from bot.database import Database
 from bot.keyboards import skip_keyboard, step_nav_keyboard
 from bot.kufar import KufarClient
 from bot.navigation import extend_keyboard, wizard_nav_rows
+from bot.users import User
+from bot.utils.chat import save_panel, track_message
 from bot.pickers import (
     area_keyboard,
     area_title,
@@ -33,28 +35,62 @@ async def _keyboard_with_nav(keyboard, state: FSMContext):
     return extend_keyboard(keyboard, wizard_nav_rows(data))
 
 
-async def show_category_picker(target: Message | CallbackQuery, state: FSMContext, kufar: KufarClient, parent_id: int | None = None) -> None:
+async def _track_wizard_message(
+    message: Message,
+    user: User | None,
+    db: Database | None,
+) -> None:
+    await track_message(message.from_user.id, message.message_id)
+    if db is not None:
+        await save_panel(db, message.from_user.id, message.message_id, user)
+
+
+async def _send_or_edit_wizard_message(
+    target: Message | CallbackQuery,
+    text: str,
+    reply_markup,
+    state: FSMContext,
+    user: User | None = None,
+    db: Database | None = None,
+    **kwargs,
+) -> None:
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=reply_markup, **kwargs)
+    else:
+        sent = await target.answer(text, reply_markup=reply_markup, **kwargs)
+        await _track_wizard_message(sent, user, db)
+
+
+async def show_category_picker(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    kufar: KufarClient,
+    parent_id: int | None = None,
+    *,
+    user: User | None = None,
+    db: Database | None = None,
+) -> None:
     data = await state.get_data()
     step = ""
     if data.get("flow") == "new" and parent_id is None and data.get("return_to") != "confirm":
         step = "<b>Шаг 2/6 — Категория</b>\n\n"
     text = step + category_title(kufar, parent_id)
     kb = await _keyboard_with_nav(category_keyboard(kufar, parent_id), state)
-    if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=kb)
-    else:
-        await target.answer(text, reply_markup=kb)
+    await _send_or_edit_wizard_message(target, text, kb, state, user=user, db=db)
     if data.get("flow") == "new" and data.get("return_to") != "confirm":
         await state.set_state(NewAlertStates.picking_category)
 
 
-async def show_region_picker(target: Message | CallbackQuery, state: FSMContext) -> None:
+async def show_region_picker(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    *,
+    user: User | None = None,
+    db: Database | None = None,
+) -> None:
     text = "<b>Шаг 3/6 — Место</b>\n\n📍 Выберите регион или «Вся Беларусь»"
     kb = await _keyboard_with_nav(region_keyboard(), state)
-    if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=kb)
-    else:
-        await target.answer(text, reply_markup=kb)
+    await _send_or_edit_wizard_message(target, text, kb, state, user=user, db=db)
     data = await state.get_data()
     if data.get("flow") == "new" and data.get("return_to") != "confirm":
         await state.set_state(NewAlertStates.picking_region)
@@ -87,7 +123,13 @@ async def _finish_edit_location(
     await _finish_edit(callback.message, state, db, kufar, alert)
 
 
-async def show_extra_filters_picker(target: Message | CallbackQuery, state: FSMContext) -> None:
+async def show_extra_filters_picker(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    *,
+    user: User | None = None,
+    db: Database | None = None,
+) -> None:
     data = await state.get_data()
     params = dict(data.get("params", {}))
     step = ""
@@ -98,10 +140,15 @@ async def show_extra_filters_picker(target: Message | CallbackQuery, state: FSMC
         f"{extra_filters_summary(params)}"
     )
     kb = await _keyboard_with_nav(extra_filters_keyboard(params), state)
-    if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    else:
-        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+    await _send_or_edit_wizard_message(
+        target,
+        text,
+        kb,
+        state,
+        user=user,
+        db=db,
+        parse_mode="HTML",
+    )
     if data.get("flow") == "new" and data.get("return_to") != "confirm":
         await state.set_state(NewAlertStates.picking_extra)
 

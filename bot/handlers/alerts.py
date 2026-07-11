@@ -326,11 +326,12 @@ async def process_query(
     await cleaner.delete_user(message)
     sent = await message.answer("<b>Шаг 2/6 — Категория</b>", parse_mode="HTML")
     await track_message(message.from_user.id, sent.message_id)
-    await show_category_picker(message, state, kufar)
+    await save_panel(db, message.from_user.id, sent.message_id, user)
+    await show_category_picker(message, state, kufar, user=user, db=db)
 
 
 @router.callback_query(F.data == "new:skip_price", NewAlertStates.waiting_price)
-async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | None, db: Database) -> None:
+async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | None, db: Database, kufar: KufarClient) -> None:
     data = await state.get_data()
     params = dict(data.get("params", {}))
     params.pop("prc", None)
@@ -342,7 +343,7 @@ async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | No
         await callback.answer()
         return
 
-    await show_extra_filters_picker(callback, state)
+    await show_extra_filters_picker(callback, state, user=user, db=db)
     await callback.answer()
 
 
@@ -370,7 +371,7 @@ async def process_price(message: Message, state: FSMContext, user: User | None, 
         return
 
     await cleaner.delete_user(message)
-    await show_extra_filters_picker(message, state)
+    await show_extra_filters_picker(message, state, user=user, db=db)
 
 
 @router.message(NewAlertStates.waiting_name)
