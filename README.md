@@ -4,12 +4,18 @@ Telegram-бот для оповещений о новых объявлениях
 
 ## Возможности
 
-- Подписка по ссылке с Kufar (все фильтры из URL)
-- Ручная настройка: запрос, категория, регион, цена
-- Уведомления с фото, ценой и ссылкой
-- Несколько подписок на пользователя
-- Пауза / возобновление / удаление
-- Работа 24/7 в облаке (Koyeb / Railway)
+- **Подписки** — по ссылке с Kufar (все фильтры из URL) или вручную (запрос, категория, регион, цена)
+- **Уведомления** в основном чате с превью ссылки, ценой, датой и кнопкой **🗑 Удалить**
+- **Стили уведомлений** — минимальный / классический, раскладка в строку или столбец
+- **Настройка полей** — что показывать в уведомлении (цена, регион, фото и т.д.)
+- **Несколько подписок** на пользователя, пауза / возобновление / редактирование
+- **Проверка поиска** — живой запрос к Kufar с карточки подписки
+- **Очистка уведомлений** — все сразу, по подписке или по одному сообщению
+- **Автоочистка чата** — старые меню бота убираются при навигации
+- **Доступ** — открытый режим или по приглашению; админ управляет пользователями и режимом из бота
+- **Работа 24/7** — Docker, Railway, Koyeb, VPS
+
+При создании подписки бот запоминает текущие объявления и уведомляет только о **новых**, опубликованных **после** подписки.
 
 ## Быстрый старт
 
@@ -22,69 +28,112 @@ Telegram-бот для оповещений о новых объявлениях
 
 ```bash
 cp .env.example .env
-# Отредактируйте .env — вставьте BOT_TOKEN
+# Вставьте BOT_TOKEN и ADMIN_USER_IDS
 ```
 
-## Деплой 24/7 в облако (рекомендуется)
-
-Локальный Docker работает только пока включён ПК. Для круглосуточной работы — **Koyeb** или **Railway** (оба без привязки карты).
-
-### Koyeb — лучший вариант (бесплатно, без карты)
-
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com/bleeeeeeeeee/kufar-alerts&branch=main&name=kufar-alerts&service_type=worker)
-
-1. Нажмите кнопку выше (или откройте [app.koyeb.com](https://app.koyeb.com))
-2. Войдите через GitHub
-3. Добавьте переменную `BOT_TOKEN` = токен от @BotFather
-4. Deploy
-
-Подробнее: [deploy/KOYEB.md](deploy/KOYEB.md)
-
-### Railway — альтернатива (trial $5, без карты)
-
-1. [railway.app/new](https://railway.app/new) → Deploy from GitHub → `kufar-alerts`
-2. Variables → `BOT_TOKEN`
-3. Restart Policy → **Always**
-
-Подробнее: [deploy/RAILWAY.md](deploy/RAILWAY.md)
-
-### Локально (только для разработки)
+### 3. Запуск локально (разработка)
 
 ```bash
-cp .env.example .env   # вставьте BOT_TOKEN
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m bot.main
 ```
 
-Или Docker (нужен запущенный Docker Desktop):
+Или через Docker:
 
 ```bash
 docker compose up -d --build
 ```
 
-## Деплой на VPS
+## Деплой 24/7
 
-| Команда | Описание |
-|---------|----------|
-| `/new` | Создать подписку |
-| `/list` | Список подписок |
-| `/edit` | Редактировать подписку |
-| `/edit ID` | Редактировать по ID |
-| `/pause ID` | Пауза |
-| `/resume ID` | Возобновить |
-| `/delete ID` | Удалить |
-| `/help` | Справка |
+### Railway (рекомендуется)
 
-## Как создать подписку по ссылке
+1. [railway.app/new](https://railway.app/new) → Deploy from GitHub → `kufar-alerts`
+2. **Variables** → `BOT_TOKEN`, `ADMIN_USER_IDS`, при необходимости `DATABASE_PATH=/app/data/kufar_alerts.db`
+3. **Restart Policy** → **Always**
 
-1. Откройте [kufar.by](https://www.kufar.by) и настройте поиск (категория, регион, цена, ключевые слова)
+Через CLI:
+
+```bash
+railway login
+railway link
+railway variables set BOT_TOKEN=ваш_токен
+railway up
+```
+
+Подробнее: [deploy/RAILWAY.md](deploy/RAILWAY.md)
+
+### Koyeb
+
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com/bleeeeeeeeee/kufar-alerts&branch=main&name=kufar-alerts&service_type=worker)
+
+Подробнее: [deploy/KOYEB.md](deploy/KOYEB.md)
+
+### VPS
+
+```bash
+git clone <repo> kufar-alerts && cd kufar-alerts
+cp .env.example .env && nano .env
+docker compose up -d --build
+```
+
+Пример systemd-сервиса: [deploy/kufar-alerts.service](deploy/kufar-alerts.service)
+
+## Использование бота
+
+Главное меню (кнопки внизу чата):
+
+| Кнопка | Действие |
+|--------|----------|
+| ➕ Новая подписка | Создать подписку по ссылке или вручную |
+| 📋 Мои подписки | Список, пауза, редактирование, проверка поиска |
+| ⚙️ Настройки | Профиль, уведомления, задержки |
+| 📖 Инструкция | Справка |
+
+### Создание подписки по ссылке
+
+1. Настройте поиск на [kufar.by](https://www.kufar.by) (категория, регион, цена, ключевые слова)
 2. Скопируйте URL из адресной строки
-3. В боте: `/new` → «Вставить ссылку» → вставьте URL
+3. **➕ Новая подписка** → «Вставить ссылку» → вставьте URL
 
-При создании подписки бот запоминает текущие объявления и уведомляет только о **новых**.
+### Настройки пользователя
 
-## Регионы
+- **🖼 Фото** — крупное превью в уведомлениях
+- **♻️ Автоочистка** — удалять старые сообщения меню при переходах
+- **🧾 Поля уведомления** — цена, регион, продавец и др.
+- **🎨 Стиль** — минимальный / классический, строка / столбец
+- **🧹 Очистить уведомления** — удалить сообщения-уведомления из чата
+- **⏱ Задержки** — интервал опроса Kufar и пауза между уведомлениями
+
+## Доступ и администрирование
+
+| Переменная / настройка | Описание |
+|------------------------|----------|
+| `ADMIN_USER_IDS` | Telegram ID администраторов (через запятую) |
+| `ACCESS_MODE` | Начальный режим: `invite` (по приглашению) или `open` (свободный вход) |
+
+Администратор в **⚙️ Настройки**:
+
+- **🔒 Доступ** — переключить режим открытый / по приглашению (сохраняется в БД, без перезапуска)
+- **👥 Пользователи** — добавить, заблокировать, назначить админа
+
+Команды для админа: `/users`, `/adduser TELEGRAM_ID`
+
+Узнать свой Telegram ID: [@userinfobot](https://t.me/userinfobot) или `/start` у бота без доступа.
+
+## Переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|------------|--------------|----------|
+| `BOT_TOKEN` | — | Токен Telegram-бота (обязательно) |
+| `ADMIN_USER_IDS` | — | ID администраторов через запятую |
+| `ACCESS_MODE` | `invite` | `invite` или `open` (до первого изменения админом в боте) |
+| `POLL_INTERVAL` | `45` | Базовый интервал проверки, сек (минимум 15) |
+| `SEARCH_SIZE` | `50` | Сколько объявлений запрашивать за один опрос (10–50) |
+| `DATABASE_PATH` | `data/kufar_alerts.db` | Путь к SQLite; на Railway — volume, напр. `/app/data/kufar_alerts.db` |
+
+## Регионы (rgn)
 
 | ID | Регион |
 |----|--------|
@@ -96,33 +145,24 @@ docker compose up -d --build
 | 6 | Минская область |
 | 7 | Минск |
 
-## Настройки (.env)
-
-| Переменная | По умолчанию | Описание |
-|------------|--------------|----------|
-| `BOT_TOKEN` | — | Токен Telegram-бота |
-| `POLL_INTERVAL` | 45 | Интервал проверки (сек) |
-| `SEARCH_SIZE` | 30 | Сколько объявлений проверять за раз |
-| `DATABASE_PATH` | data/kufar_alerts.db | Путь к SQLite |
-
-## Команды бота
-
-```bash
-git clone <repo> kufar-alerts && cd kufar-alerts
-cp .env.example .env && nano .env
-docker compose up -d --build
-```
-
-Бот перезапустится автоматически при падении (`restart: unless-stopped`).
-
-## Структура
+## Структура проекта
 
 ```
 bot/
-  main.py       — точка входа
-  config.py     — настройки
-  database.py   — SQLite
-  kufar.py      — API Kufar
-  poller.py     — фоновая проверка
-  handlers/     — команды Telegram
+  main.py              — точка входа
+  config.py            — настройки из .env
+  database.py          — SQLite (подписки, пользователи, уведомления)
+  kufar.py             — API Kufar
+  poller.py            — фоновая проверка подписок
+  notifier.py          — отправка уведомлений
+  notification_styles.py
+  probe.py             — проверка поиска по подписке
+  middleware.py        — доступ, инъекция зависимостей
+  handlers/
+    start.py           — /start, главное меню, справка
+    alerts.py          — подписки
+    settings.py        — настройки пользователя
+    notifications.py   — удаление и очистка уведомлений
+    admin.py           — управление пользователями
+    edit.py, pickers.py
 ```

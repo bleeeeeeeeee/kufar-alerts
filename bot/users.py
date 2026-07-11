@@ -58,7 +58,9 @@ class NotificationDisplay:
 class UserSettings:
     photos_enabled: bool = True
     auto_clear_chat: bool = True
-    notification_topic_id: int | None = None
+    ui_message_id: int | None = None
+    notification_style: str = "minimal"
+    notification_layout: str = "row"
     notification_display: NotificationDisplay = field(default_factory=NotificationDisplay)
     poll_interval: int | None = None
     notify_cooldown: int = 0
@@ -67,13 +69,21 @@ class UserSettings:
     def from_dict(cls, data: dict[str, Any] | None) -> UserSettings:
         if not data:
             return cls()
-        topic_id = data.get("notification_topic_id")
         poll_interval = data.get("poll_interval")
         notify_cooldown = int(data.get("notify_cooldown") or 0)
+        ui_message_id = data.get("ui_message_id")
+        style = str(data.get("notification_style") or "minimal")
+        if style not in ("minimal", "classic"):
+            style = "minimal"
+        layout = str(data.get("notification_layout") or "row")
+        if layout not in ("row", "column"):
+            layout = "row"
         return cls(
             photos_enabled=bool(data.get("photos_enabled", True)),
             auto_clear_chat=bool(data.get("auto_clear_chat", True)),
-            notification_topic_id=int(topic_id) if topic_id else None,
+            ui_message_id=int(ui_message_id) if ui_message_id else None,
+            notification_style=style,
+            notification_layout=layout,
             notification_display=NotificationDisplay.from_dict(data.get("notification_display")),
             poll_interval=int(poll_interval) if poll_interval else None,
             notify_cooldown=max(0, notify_cooldown),
@@ -83,11 +93,13 @@ class UserSettings:
         data: dict[str, Any] = {
             "photos_enabled": self.photos_enabled,
             "auto_clear_chat": self.auto_clear_chat,
+            "notification_style": self.notification_style,
+            "notification_layout": self.notification_layout,
             "notification_display": self.notification_display.to_dict(),
             "notify_cooldown": self.notify_cooldown,
         }
-        if self.notification_topic_id is not None:
-            data["notification_topic_id"] = self.notification_topic_id
+        if self.ui_message_id is not None:
+            data["ui_message_id"] = self.ui_message_id
         if self.poll_interval is not None:
             data["poll_interval"] = self.poll_interval
         return data

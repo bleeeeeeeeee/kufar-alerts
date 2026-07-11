@@ -21,7 +21,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ],
     ],
     resize_keyboard=True,
-    input_field_placeholder="Выберите действие",
+    input_field_placeholder="Или нажмите ☰ слева",
 )
 
 

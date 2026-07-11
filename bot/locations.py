@@ -191,6 +191,17 @@ AREAS: dict[int, dict[int, str]] = {
 REGION_ORDER = [7, 5, 1, 2, 3, 4, 6]
 
 
+def region_slug_from_id(region_id: int | str | None) -> str | None:
+    try:
+        rid = int(region_id)
+    except (TypeError, ValueError):
+        return None
+    for slug, value in REGION_SLUGS.items():
+        if value == rid:
+            return slug
+    return None
+
+
 def region_name(region_id: int | str | None) -> str:
     if region_id is None:
         return ""

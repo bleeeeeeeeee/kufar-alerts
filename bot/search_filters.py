@@ -7,7 +7,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 CORE_PARAM_KEYS = frozenset({"cat", "rgn", "ar", "prc"})
 
 TOGGLE_FILTERS: dict[str, dict[str, str]] = {
-    "ot": {"label": "Искать в названии", "icon": "🔤"},
     "oph": {"label": "Только с фото", "icon": "📷"},
     "dle": {"label": "Куфар Доставка", "icon": "📦"},
     "pse": {"label": "Возможен обмен", "icon": "🔄"},

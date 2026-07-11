@@ -138,7 +138,10 @@ def alert_detail_keyboard(alert: Alert) -> InlineKeyboardMarkup:
         ])
 
     rows.append([
-        InlineKeyboardButton(text="🔄 Синхронизировать", callback_data=f"alert:resync:{alert.id}"),
+        InlineKeyboardButton(text="🔍 Проверить поиск", callback_data=f"alert:probe:{alert.id}"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="🧹 Очистка уведомлений", callback_data=f"notify:clear:alert:{alert.id}"),
     ])
     rows.append([
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"alert:delete:{alert.id}"),

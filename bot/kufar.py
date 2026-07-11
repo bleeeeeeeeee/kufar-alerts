@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urlencode
 
 import aiohttp
 
 from bot.catalog import set_category_names
-from bot.price import format_listing_price_byn, prc_for_website
+from bot.kufar_params import normalize_params_for_api
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +29,54 @@ class KufarClient:
         self._category_index: dict[int, dict[str, Any]] = {}
 
     async def search(self, query: str = "", **params: str) -> list[dict[str, Any]]:
+        await self.load_category_tree()
+        api_params = normalize_params_for_api({k: str(v) for k, v in params.items() if v})
+
+        cat = api_params.get("cat")
+        if cat:
+            cat_id = int(cat)
+            if self.get_category_children(cat_id):
+                leaf_ids = self._leaf_category_ids(cat_id)
+                if len(leaf_ids) > 1:
+                    return await self._search_merged(query, leaf_ids, api_params)
+
+        return await self._search_once(query, **api_params)
+
+    def _leaf_category_ids(self, cat_id: int) -> list[int]:
+        children = self.get_category_children(cat_id)
+        if not children:
+            return [cat_id]
+        ids: list[int] = []
+        for child in children:
+            ids.extend(self._leaf_category_ids(int(child["id"])))
+        return ids
+
+    async def _search_merged(
+        self,
+        query: str,
+        cat_ids: list[int],
+        params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        base = {k: v for k, v in params.items() if k != "cat"}
+
+        for cat_id in cat_ids:
+            ads = await self._search_once(query, cat=str(cat_id), **base)
+            for ad in ads:
+                ad_id = ad.get("ad_id")
+                if not ad_id:
+                    continue
+                aid = int(ad_id)
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                merged.append(ad)
+
+        merged.sort(key=lambda ad: ad.get("list_time", ""), reverse=True)
+        return merged[: self.search_size]
+
+    async def _search_once(self, query: str = "", **params: str) -> list[dict[str, Any]]:
         search_params = {
             "sort": "lst.d",
             "size": str(self.search_size),
@@ -53,7 +100,10 @@ class KufarClient:
         return data.get("ads") or []
 
     async def download_image(self, url: str) -> bytes | None:
-        headers = {"User-Agent": USER_AGENT}
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": "https://www.kufar.by/",
+        }
         try:
             async with self.session.get(
                 url,
@@ -137,17 +187,16 @@ def get_image_urls_from_image(image: dict[str, Any]) -> list[str]:
     if not image:
         return []
 
+    path = (image.get("path") or "").strip().lstrip("/")
+    if path:
+        return [f"https://rms.kufar.by/v1/gallery/{path}"]
+
     if image.get("yams_storage") and image.get("id") and image["id"] != "0000":
         image_id = str(image["id"])
         return [
             f"https://yams.kufar.by/api/v1/kufar-ads/images/"
             f"{image_id[:2]}/{image_id}.jpg?rule=gallery"
         ]
-
-    path = image.get("path") or ""
-    if path:
-        filename = path.split("/")[-1]
-        return [f"https://content.kufar.by/gallery/ad/{filename}"]
 
     return []
 
@@ -161,26 +210,7 @@ def get_image_urls(ad: dict[str, Any]) -> list[str]:
     return urls
 
 
-def format_price(ad: dict[str, Any]) -> str:
-    return format_listing_price_byn(ad.get("price_byn"))
-
-
-def get_param_value(ad: dict[str, Any], param_name: str) -> str:
-    for param in ad.get("ad_parameters") or []:
-        if param.get("p") == param_name:
-            return str(param.get("vl") or "")
-    return ""
-
-
 def build_search_url(query: str = "", **params: str) -> str:
-    search_params: dict[str, str] = {"sort": "lst.d"}
-    if query:
-        search_params["query"] = query
-    for key, value in params.items():
-        if not value:
-            continue
-        if key == "prc":
-            value = prc_for_website(value) or ""
-        if value:
-            search_params[key] = value
-    return f"https://www.kufar.by/l?{urlencode(search_params)}"
+    from bot.kufar_params import build_search_url as _build_search_url
+
+    return _build_search_url(query, **params)

@@ -11,8 +11,10 @@ from bot.keyboards import MAIN_MENU, MAIN_MENU_BUTTONS, skip_keyboard, step_nav_
 from bot.navigation import wizard_nav_keyboard, wizard_nav_rows
 from bot.kufar import KufarClient
 from bot.price import PRICE_INPUT_HINT, parse_price_input
+from bot.probe import probe_alert
 from bot.seeding import activate_alert_after_seed, seed_alert
 from bot.states import NewAlertStates
+from bot.notification_cleanup import purge_notifications
 from bot.ui import (
     alert_delete_confirm_keyboard,
     alert_detail_keyboard,
@@ -26,7 +28,18 @@ from bot.ui import (
     new_subscription_keyboard,
 )
 from bot.users import User
-from bot.utils.chat import WizardCleaner, prepare_menu_callback, prepare_menu_message, send_menu_message, track_message
+from bot.utils.chat import (
+    WizardCleaner,
+    prepare_menu_callback,
+    prepare_menu_message,
+    reply_user,
+    send_menu_message,
+    send_panel_message,
+    track_message,
+    try_delete,
+    auto_clear_enabled,
+    save_panel,
+)
 
 router = Router()
 
@@ -88,13 +101,18 @@ async def _show_draft_callback(callback: CallbackQuery, state: FSMContext, clean
 @router.message(Command("new"))
 @router.message(F.text == MAIN_MENU_BUTTONS["new"])
 @router.callback_query(F.data == "alert:new")
-async def cmd_new(event: Message | CallbackQuery, state: FSMContext, user: User | None) -> None:
+async def cmd_new(
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    user: User | None,
+    db: Database,
+) -> None:
     text = (
         "<b>➕ Новая подписка</b>\n\n"
         "Самый быстрый способ — вставить ссылку с поиска на kufar.by.\n"
         "Или настройте фильтры вручную шаг за шагом."
     )
-    cleaner = WizardCleaner(state, user)
+    cleaner = WizardCleaner(state, user, db)
     if isinstance(event, CallbackQuery):
         await cleaner.begin_callback(event, state)
         await cleaner.edit_or_send(event, text, parse_mode="HTML", reply_markup=new_subscription_keyboard())
@@ -105,8 +123,8 @@ async def cmd_new(event: Message | CallbackQuery, state: FSMContext, user: User 
     await state.set_state(NewAlertStates.waiting_method)
 
 
-@router.callback_query(F.data == "new:cancel_confirm", NewAlertStates.confirm)
-async def cancel_confirm_prompt(callback: CallbackQuery) -> None:
+@router.callback_query(F.data == "new:cancel_confirm")
+async def cancel_confirm_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
         "Отменить создание подписки?",
         reply_markup=cancel_confirm_keyboard(),
@@ -115,16 +133,30 @@ async def cancel_confirm_prompt(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "new:cancel")
-async def cancel_new(callback: CallbackQuery, state: FSMContext, user: User | None) -> None:
-    cleaner = WizardCleaner(state, user)
+async def cancel_new(
+    callback: CallbackQuery,
+    state: FSMContext,
+    user: User | None,
+    db: Database,
+) -> None:
+    cleaner = WizardCleaner(state, user, db)
     await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id, callback.from_user.id)
     await state.clear()
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-    sent = await callback.message.answer("Создание подписки отменено.", reply_markup=MAIN_MENU)
-    await track_message(callback.from_user.id, sent.message_id)
+    if auto_clear_enabled(user):
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+    await send_panel_message(
+        callback.message.bot,
+        callback.from_user.id,
+        callback.from_user.id,
+        user,
+        db,
+        "Создание подписки отменено.",
+        cleanup=True,
+        reply_markup=MAIN_MENU,
+    )
     await callback.answer()
 
 
@@ -139,8 +171,8 @@ async def new_edit_menu(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "new:edit:back")
-async def new_edit_back(callback: CallbackQuery, state: FSMContext, user: User | None) -> None:
-    cleaner = WizardCleaner(state, user)
+async def new_edit_back(callback: CallbackQuery, state: FSMContext, user: User | None, db: Database) -> None:
+    cleaner = WizardCleaner(state, user, db)
     await _show_draft_callback(callback, state, cleaner)
     await callback.answer()
 
@@ -232,8 +264,8 @@ async def new_manual(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(NewAlertStates.waiting_url)
-async def process_url(message: Message, state: FSMContext, user: User | None) -> None:
-    cleaner = WizardCleaner(state, user)
+async def process_url(message: Message, state: FSMContext, user: User | None, db: Database) -> None:
+    cleaner = WizardCleaner(state, user, db)
     try:
         query, params = parse_kufar_url(message.text or "")
     except ValueError as exc:
@@ -257,9 +289,30 @@ async def skip_query(callback: CallbackQuery, state: FSMContext, kufar: KufarCli
     await callback.answer()
 
 
+@router.message(NewAlertStates.picking_category)
+@router.message(NewAlertStates.picking_region)
+@router.message(NewAlertStates.picking_extra)
+async def wizard_picker_text(message: Message, user: User | None, db: Database) -> None:
+    if auto_clear_enabled(user):
+        await try_delete(message.bot, message.chat.id, message.message_id)
+    sent = await message.answer(
+        "На этом шаге используйте кнопки под сообщением ☝️",
+        reply_markup=MAIN_MENU,
+    )
+    await track_message(message.from_user.id, sent.message_id)
+    if db is not None:
+        await save_panel(db, message.from_user.id, sent.message_id, user)
+
+
 @router.message(NewAlertStates.waiting_query)
-async def process_query(message: Message, state: FSMContext, kufar: KufarClient, user: User | None) -> None:
-    cleaner = WizardCleaner(state, user)
+async def process_query(
+    message: Message,
+    state: FSMContext,
+    kufar: KufarClient,
+    user: User | None,
+    db: Database,
+) -> None:
+    cleaner = WizardCleaner(state, user, db)
     text = (message.text or "").strip()
     query = "" if text == "-" else text
     await state.update_data(query=query, flow="new")
@@ -277,14 +330,14 @@ async def process_query(message: Message, state: FSMContext, kufar: KufarClient,
 
 
 @router.callback_query(F.data == "new:skip_price", NewAlertStates.waiting_price)
-async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | None) -> None:
+async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | None, db: Database) -> None:
     data = await state.get_data()
     params = dict(data.get("params", {}))
     params.pop("prc", None)
     await state.update_data(params=params)
 
     if data.get("return_to") == "confirm":
-        cleaner = WizardCleaner(state, user)
+        cleaner = WizardCleaner(state, user, db)
         await _show_draft_callback(callback, state, cleaner)
         await callback.answer()
         return
@@ -294,8 +347,8 @@ async def skip_price(callback: CallbackQuery, state: FSMContext, user: User | No
 
 
 @router.message(NewAlertStates.waiting_price)
-async def process_price(message: Message, state: FSMContext, user: User | None) -> None:
-    cleaner = WizardCleaner(state, user)
+async def process_price(message: Message, state: FSMContext, user: User | None, db: Database) -> None:
+    cleaner = WizardCleaner(state, user, db)
     try:
         prc = parse_price_input(message.text or "")
     except ValueError as exc:
@@ -321,8 +374,8 @@ async def process_price(message: Message, state: FSMContext, user: User | None) 
 
 
 @router.message(NewAlertStates.waiting_name)
-async def process_name(message: Message, state: FSMContext, user: User | None) -> None:
-    cleaner = WizardCleaner(state, user)
+async def process_name(message: Message, state: FSMContext, user: User | None, db: Database) -> None:
+    cleaner = WizardCleaner(state, user, db)
     name = (message.text or "").strip() or "Подписка"
     await state.update_data(name=name)
     await _show_draft(message, state, cleaner)
@@ -336,7 +389,7 @@ async def confirm_new(
     kufar: KufarClient,
     user: User | None,
 ) -> None:
-    cleaner = WizardCleaner(state, user)
+    cleaner = WizardCleaner(state, user, db)
     data = await state.get_data()
     query = data.get("query", "")
     params = {k: v for k, v in data.get("params", {}).items() if not k.startswith("_")}
@@ -354,7 +407,7 @@ async def confirm_new(
     alert = await db.get_alert(alert.id, callback.from_user.id) or alert
     seed_note = (
         f"📥 Загружено {seeded} текущих объявлений.\n"
-        "Уведомления придут только о <b>новых</b>."
+        "Синхронизация дальше автоматическая — уведомления только о <b>новых</b>."
         if seeded >= 0
         else "⚠️ Не удалось загрузить объявления — проверьте фильтры."
     )
@@ -362,18 +415,24 @@ async def confirm_new(
     await cleaner.cleanup_wizard(callback.message.bot, callback.message.chat.id, callback.from_user.id)
     await state.clear()
 
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
+    if auto_clear_enabled(user):
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
 
-    sent = await callback.message.answer(
+    await send_panel_message(
+        callback.message.bot,
+        callback.from_user.id,
+        callback.from_user.id,
+        user,
+        db,
         f"✅ <b>Подписка создана!</b>\n\n{format_alert_card(alert)}\n\n{seed_note}",
+        cleanup=True,
         parse_mode="HTML",
         reply_markup=alert_detail_keyboard(alert),
         disable_web_page_preview=True,
     )
-    await track_message(callback.from_user.id, sent.message_id)
     await callback.answer("Подписка создана!")
 
 
@@ -385,9 +444,9 @@ async def cmd_list(event: Message | CallbackQuery, db: Database, user: User | No
     alerts = await db.get_user_alerts(user_id)
 
     if isinstance(event, CallbackQuery):
-        await prepare_menu_callback(event, user, state)
+        await prepare_menu_callback(event, user, state, db)
     else:
-        await prepare_menu_message(event, user, state)
+        await prepare_menu_message(event, user, state, db)
 
     if not alerts:
         text = (
@@ -398,8 +457,7 @@ async def cmd_list(event: Message | CallbackQuery, db: Database, user: User | No
             await event.message.edit_text(text, parse_mode="HTML", reply_markup=new_subscription_keyboard())
             await event.answer()
         else:
-            sent = await event.answer(text, parse_mode="HTML", reply_markup=MAIN_MENU)
-            await track_message(user_id, sent.message_id)
+            sent = await send_menu_message(event, user, text, state, db, parse_mode="HTML", reply_markup=MAIN_MENU)
         return
 
     text = format_alerts_overview(alerts)
@@ -409,13 +467,21 @@ async def cmd_list(event: Message | CallbackQuery, db: Database, user: User | No
         await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
         await event.answer()
     else:
-        sent = await event.answer(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
-        await track_message(user_id, sent.message_id)
+        await send_menu_message(
+            event,
+            user,
+            text,
+            state,
+            db,
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
 
 
 @router.callback_query(F.data.startswith("alert:view:"))
 async def alert_view_cb(callback: CallbackQuery, db: Database, user: User | None, state: FSMContext) -> None:
-    await prepare_menu_callback(callback, user, state)
+    await prepare_menu_callback(callback, user, state, db)
     alert_id = int(callback.data.split(":")[-1])
     alert = await db.get_alert(alert_id, callback.from_user.id)
     if not alert:
@@ -452,8 +518,29 @@ async def alert_resume_cb(callback: CallbackQuery, db: Database, kufar: KufarCli
         return
     alert = await db.get_alert(alert_id, callback.from_user.id)
     await _edit_alert_detail(callback, alert)
-    note = f", синхронизировано {seeded} объявлений" if seeded >= 0 else ""
+    note = f", база обновлена ({seeded} объявлений)" if seeded >= 0 else ""
     await callback.answer(f"✅ Подписка возобновлена{note}")
+
+
+@router.callback_query(F.data.startswith("alert:probe:"))
+async def alert_probe_cb(
+    callback: CallbackQuery,
+    db: Database,
+    kufar: KufarClient,
+) -> None:
+    alert_id = int(callback.data.split(":")[-1])
+    alert = await db.get_alert(alert_id, callback.from_user.id)
+    if not alert:
+        await callback.answer("Подписка не найдена", show_alert=True)
+        return
+    await callback.answer("Проверяю Kufar…")
+    text = await probe_alert(db, kufar, alert)
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=alert_detail_keyboard(alert),
+    )
 
 
 @router.callback_query(F.data.startswith("alert:resync:"))
@@ -465,7 +552,11 @@ async def alert_resync_cb(callback: CallbackQuery, db: Database, kufar: KufarCli
         return
     seeded = await seed_alert(db, kufar, alert, clear_first=True)
     if seeded >= 0:
-        await callback.answer(f"🔄 Синхронизировано: {seeded} объявлений")
+        await callback.answer(
+            f"🔄 Синхронизировано: {seeded} объявлений. "
+            "Не синхронизируйте после публикации тестового объявления.",
+            show_alert=True,
+        )
     else:
         await callback.answer("Ошибка синхронизации", show_alert=True)
 
@@ -488,20 +579,27 @@ async def alert_delete_cb(callback: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data.startswith("alert:delete_confirm:"))
 async def alert_delete_confirm_cb(callback: CallbackQuery, db: Database) -> None:
     alert_id = int(callback.data.split(":")[-1])
+    removed = await purge_notifications(
+        callback.message.bot,
+        db,
+        callback.from_user.id,
+        alert_id=alert_id,
+    )
     if not await db.delete_alert(alert_id, callback.from_user.id):
         await callback.answer("Подписка не найдена", show_alert=True)
         return
     alerts = await db.get_user_alerts(callback.from_user.id)
+    note = f"\n\nУдалено уведомлений: {removed}." if removed else ""
     if alerts:
         await callback.message.edit_text(
-            format_alerts_overview(alerts),
+            format_alerts_overview(alerts) + note,
             parse_mode="HTML",
             reply_markup=alerts_list_keyboard(alerts),
             disable_web_page_preview=True,
         )
     else:
         await callback.message.edit_text(
-            "🗑 Подписка удалена.\n\nУ вас больше нет подписок.",
+            f"🗑 Подписка удалена.{note}\n\nУ вас больше нет подписок.",
             reply_markup=new_subscription_keyboard(),
         )
     await callback.answer("Подписка удалена")
@@ -573,7 +671,12 @@ async def cmd_resume(message: Message, db: Database, kufar: KufarClient) -> None
 async def cmd_resync(message: Message, db: Database, kufar: KufarClient) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        sent = await message.answer("Укажите ID или нажмите 🔄 в карточке подписки.")
+        sent = await message.answer(
+            "Принудительный сброс базы объявлений:\n"
+            "<code>/resync ID</code>\n\n"
+            "Обычно не нужен — синхронизация идёт автоматически.",
+            parse_mode="HTML",
+        )
         await track_message(message.from_user.id, sent.message_id)
         return
     alert_id = int(parts[1])
@@ -598,8 +701,15 @@ async def cmd_delete(message: Message, db: Database) -> None:
         await track_message(message.from_user.id, sent.message_id)
         return
     alert_id = int(parts[1])
+    removed = await purge_notifications(
+        message.bot,
+        db,
+        message.from_user.id,
+        alert_id=alert_id,
+    )
     if await db.delete_alert(alert_id, message.from_user.id):
-        sent = await message.answer(f"🗑 Подписка {alert_id} удалена.")
+        note = f" Удалено уведомлений: {removed}." if removed else ""
+        sent = await message.answer(f"🗑 Подписка {alert_id} удалена.{note}")
     else:
         sent = await message.answer("Подписка не найдена.")
     await track_message(message.from_user.id, sent.message_id)

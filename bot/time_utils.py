@@ -29,7 +29,10 @@ def is_ad_after_alert_created(ad: dict[str, Any], created_at: str | None) -> boo
         return True
 
     alert_time = parse_iso_time(created_at)
+    if alert_time is None:
+        return False
+
     ad_time = parse_iso_time(ad.get("list_time"))
-    if alert_time is None or ad_time is None:
-        return True
+    if ad_time is None:
+        return False
     return ad_time > alert_time

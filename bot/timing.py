@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-POLL_INTERVAL_OPTIONS: tuple[int, ...] = (30, 45, 60, 90, 120, 180, 300)
+POLL_INTERVAL_OPTIONS: tuple[int, ...] = (15, 30, 45, 60, 90, 120, 180, 300)
 NOTIFY_COOLDOWN_OPTIONS: tuple[int, ...] = (0, 30, 60, 300, 900)
 
 

@@ -44,6 +44,8 @@ async def show_category_picker(target: Message | CallbackQuery, state: FSMContex
         await target.message.edit_text(text, reply_markup=kb)
     else:
         await target.answer(text, reply_markup=kb)
+    if data.get("flow") == "new" and data.get("return_to") != "confirm":
+        await state.set_state(NewAlertStates.picking_category)
 
 
 async def show_region_picker(target: Message | CallbackQuery, state: FSMContext) -> None:
@@ -53,6 +55,9 @@ async def show_region_picker(target: Message | CallbackQuery, state: FSMContext)
         await target.message.edit_text(text, reply_markup=kb)
     else:
         await target.answer(text, reply_markup=kb)
+    data = await state.get_data()
+    if data.get("flow") == "new" and data.get("return_to") != "confirm":
+        await state.set_state(NewAlertStates.picking_region)
 
 
 async def show_area_picker(callback: CallbackQuery, region_id: int, state: FSMContext, page: int = 0) -> None:
@@ -97,6 +102,8 @@ async def show_extra_filters_picker(target: Message | CallbackQuery, state: FSMC
         await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=kb)
+    if data.get("flow") == "new" and data.get("return_to") != "confirm":
+        await state.set_state(NewAlertStates.picking_extra)
 
 
 async def _go_new_price(callback: CallbackQuery, state: FSMContext) -> None:
@@ -128,6 +135,7 @@ async def _return_to_draft_if_needed(
     callback: CallbackQuery,
     state: FSMContext,
     user,
+    db: Database,
 ) -> bool:
     data = await state.get_data()
     if data.get("return_to") != "confirm":
@@ -135,7 +143,7 @@ async def _return_to_draft_if_needed(
     from bot.handlers.alerts import _show_draft_callback
     from bot.utils.chat import WizardCleaner
 
-    cleaner = WizardCleaner(state, user)
+    cleaner = WizardCleaner(state, user, db)
     await _show_draft_callback(callback, state, cleaner)
     return True
 
@@ -161,7 +169,7 @@ async def pick_category(
             from bot.handlers.edit import _finish_edit
             await callback.message.delete()
             await _finish_edit(callback.message, state, db, kufar, alert)
-        elif await _return_to_draft_if_needed(callback, state, user):
+        elif await _return_to_draft_if_needed(callback, state, user, db):
             pass
         else:
             await show_region_picker(callback, state)
@@ -185,7 +193,7 @@ async def pick_category(
             from bot.handlers.edit import _finish_edit
             await callback.message.delete()
             await _finish_edit(callback.message, state, db, kufar, alert)
-        elif await _return_to_draft_if_needed(callback, state, user):
+        elif await _return_to_draft_if_needed(callback, state, user, db):
             pass
         else:
             await show_region_picker(callback, state)
@@ -218,7 +226,7 @@ async def pick_location(
             from bot.handlers.edit import _finish_edit
             await callback.message.delete()
             await _finish_edit(callback.message, state, db, kufar, alert)
-        elif await _return_to_draft_if_needed(callback, state, user):
+        elif await _return_to_draft_if_needed(callback, state, user, db):
             pass
         else:
             await _go_new_price(callback, state)
@@ -254,7 +262,7 @@ async def pick_location(
         await state.update_data(params=params)
         if flow == "edit":
             await _finish_edit_location(callback, state, db, kufar, params)
-        elif await _return_to_draft_if_needed(callback, state, user):
+        elif await _return_to_draft_if_needed(callback, state, user, db):
             pass
         else:
             await _go_new_price(callback, state)
@@ -272,7 +280,7 @@ async def pick_location(
         await state.update_data(params=params)
         if flow == "edit":
             await _finish_edit_location(callback, state, db, kufar, params)
-        elif await _return_to_draft_if_needed(callback, state, user):
+        elif await _return_to_draft_if_needed(callback, state, user, db):
             pass
         else:
             await _go_new_price(callback, state)
@@ -307,7 +315,7 @@ async def _finish_extra_filters(
         await _finish_edit(callback.message, state, db, kufar, alert)
         return
 
-    if await _return_to_draft_if_needed(callback, state, user):
+    if await _return_to_draft_if_needed(callback, state, user, db):
         return
 
     await _go_new_name(callback, state)

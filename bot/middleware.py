@@ -6,7 +6,13 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 
-from bot.access import get_telegram_user, is_access_exempt, profile_from_user
+from bot.access import (
+    format_invite_no_access_text,
+    get_telegram_user,
+    is_access_exempt,
+    is_start_command,
+    profile_from_user,
+)
 from bot.config import Settings
 from bot.database import Database
 from bot.kufar import KufarClient
@@ -49,7 +55,7 @@ class AccessMiddleware(BaseMiddleware):
                 active=True,
             )
 
-        if self.settings.access_mode == "open":
+        if await self.db.get_access_mode(self.settings.access_mode) == "open":
             return await self.db.upsert_user(
                 tg_user.id,
                 **profile_from_user(tg_user),
@@ -63,17 +69,25 @@ class AccessMiddleware(BaseMiddleware):
         return None
 
     async def _send_denied(self, event: TelegramObject, tg_user) -> None:
-        text = (
-            "🔒 <b>Нет доступа к боту</b>\n\n"
-            "Бот работает по приглашениям. Попросите администратора добавить вас.\n\n"
-            f"Ваш Telegram ID: <code>{tg_user.id}</code>\n"
-            f"{'@' + tg_user.username if tg_user.username else ''}"
-        )
+        stored_user = await self.db.get_user(tg_user.id)
+        if stored_user and not stored_user.active:
+            text = format_invite_no_access_text(tg_user, blocked=True)
+        else:
+            mode = await self.db.get_access_mode(self.settings.access_mode)
+            if mode == "open":
+                text = (
+                    "🔒 <b>Нет доступа к боту</b>\n\n"
+                    "Попробуйте отправить /start ещё раз."
+                )
+            else:
+                text = format_invite_no_access_text(tg_user)
         if isinstance(event, CallbackQuery):
             await event.answer("Нет доступа", show_alert=True)
             await event.message.answer(text, parse_mode="HTML")
         elif isinstance(event, Message):
-            await event.answer(text, parse_mode="HTML")
+            from bot.utils.chat import reply_user
+
+            await reply_user(event, text, parse_mode="HTML")
 
     async def __call__(
         self,

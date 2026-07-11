@@ -15,7 +15,7 @@ from bot.seeding import seed_alert
 from bot.states import EditAlertStates
 from bot.ui import alert_detail_keyboard, format_alert_card
 from bot.users import User
-from bot.utils.chat import prepare_menu_message, send_menu_message, track_message, WizardCleaner
+from bot.utils.chat import prepare_menu_message, send_menu_message, send_panel_message, track_message, WizardCleaner
 
 router = Router()
 
@@ -52,7 +52,7 @@ async def _finish_edit(
     *,
     reseed: bool = True,
 ) -> None:
-    cleaner = WizardCleaner(state, user)
+    cleaner = WizardCleaner(state, user, db)
     await cleaner.cleanup_wizard(message.bot, message.chat.id, message.from_user.id)
     seeded = await _seed_alert(alert, kufar, db) if reseed else 0
     await state.clear()
@@ -62,13 +62,17 @@ async def _finish_edit(
             text += f"\n\n📥 Загружено {seeded} объявлений — уведомления только о новых."
         else:
             text += "\n\n⚠️ Не удалось обновить список — проверьте фильтры."
-    sent = await message.answer(
+    sent = await send_panel_message(
+        message.bot,
+        message.chat.id,
+        message.from_user.id,
+        user,
+        db,
         text,
         parse_mode="HTML",
         reply_markup=alert_detail_keyboard(alert),
         disable_web_page_preview=True,
     )
-    await track_message(message.from_user.id, sent.message_id)
 
 
 @router.message(Command("edit"))
@@ -77,7 +81,7 @@ async def cmd_edit(message: Message, state: FSMContext, db: Database, user: User
     user_id = message.from_user.id
 
     if len(parts) >= 2 and parts[1].isdigit():
-        await prepare_menu_message(message, user, state)
+        await prepare_menu_message(message, user, state, db)
         alert_id = int(parts[1])
         alert = await db.get_alert(alert_id, user_id)
         if not alert:
@@ -164,8 +168,8 @@ async def edit_field_pick(callback: CallbackQuery, state: FSMContext, db: Databa
 
 
 @router.message(EditAlertStates.waiting_name)
-async def edit_name(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
+async def edit_name(message: Message, state: FSMContext, db: Database, kufar: KufarClient, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user, db)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     name = (message.text or "").strip()
@@ -180,12 +184,12 @@ async def edit_name(message: Message, state: FSMContext, db: Database, kufar: Ku
         return
 
     await cleaner.delete_user(message)
-    await _finish_edit(message, state, db, kufar, alert, reseed=False)
+    await _finish_edit(message, state, db, kufar, alert, user, reseed=False)
 
 
 @router.message(EditAlertStates.waiting_query)
-async def edit_query(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
+async def edit_query(message: Message, state: FSMContext, db: Database, kufar: KufarClient, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user, db)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     text = (message.text or "").strip()
@@ -198,12 +202,12 @@ async def edit_query(message: Message, state: FSMContext, db: Database, kufar: K
         return
 
     await cleaner.delete_user(message)
-    await _finish_edit(message, state, db, kufar, alert)
+    await _finish_edit(message, state, db, kufar, alert, user)
 
 
 @router.message(EditAlertStates.waiting_url)
-async def edit_url(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
+async def edit_url(message: Message, state: FSMContext, db: Database, kufar: KufarClient, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user, db)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
     try:
@@ -219,11 +223,11 @@ async def edit_url(message: Message, state: FSMContext, db: Database, kufar: Kuf
         return
 
     await cleaner.delete_user(message)
-    await _finish_edit(message, state, db, kufar, alert)
+    await _finish_edit(message, state, db, kufar, alert, user)
 
 
 @router.callback_query(F.data.startswith("edit:skip_price:"))
-async def edit_skip_price(callback: CallbackQuery, state: FSMContext, db: Database, kufar: KufarClient) -> None:
+async def edit_skip_price(callback: CallbackQuery, state: FSMContext, db: Database, kufar: KufarClient, user: User | None) -> None:
     alert_id = int(callback.data.split(":")[-1])
     alert = await db.get_alert(alert_id, callback.from_user.id)
     if not alert:
@@ -235,13 +239,13 @@ async def edit_skip_price(callback: CallbackQuery, state: FSMContext, db: Databa
     params.pop("prc", None)
     alert = await db.update_alert(alert_id, callback.from_user.id, params=params)
     await callback.message.delete()
-    await _finish_edit(callback.message, state, db, kufar, alert)
+    await _finish_edit(callback.message, state, db, kufar, alert, user)
     await callback.answer()
 
 
 @router.message(EditAlertStates.waiting_price)
-async def edit_price(message: Message, state: FSMContext, db: Database, kufar: KufarClient) -> None:
-    cleaner = WizardCleaner(state)
+async def edit_price(message: Message, state: FSMContext, db: Database, kufar: KufarClient, user: User | None) -> None:
+    cleaner = WizardCleaner(state, user, db)
     data = await state.get_data()
     alert_id = data.get("edit_alert_id")
 
@@ -265,4 +269,4 @@ async def edit_price(message: Message, state: FSMContext, db: Database, kufar: K
 
     alert = await db.update_alert(alert_id, message.from_user.id, params=params)
     await cleaner.delete_user(message)
-    await _finish_edit(message, state, db, kufar, alert)
+    await _finish_edit(message, state, db, kufar, alert, user)

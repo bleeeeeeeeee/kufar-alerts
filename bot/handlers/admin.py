@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot.access import extract_forwarded_user, extract_shared_user_ids, forwarded_user_error_hint
 from bot.database import Database
 from bot.users import User
 from bot.utils.chat import track_message
@@ -48,9 +49,21 @@ def admin_user_detail_keyboard(target: User, current_admin_id: int) -> InlineKey
             rows.append([InlineKeyboardButton(text="👤 Снять админа", callback_data=f"admin:demote:{target.user_id}")])
         else:
             rows.append([InlineKeyboardButton(text="👑 Сделать админом", callback_data=f"admin:promote:{target.user_id}")])
+        rows.append([InlineKeyboardButton(text="🗑 Удалить пользователя", callback_data=f"admin:delete_user:{target.user_id}")])
 
     rows.append([InlineKeyboardButton(text="◀️ К списку", callback_data="admin:users")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_user_delete_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="❌ Да, удалить", callback_data=f"admin:delete_user_confirm:{user_id}"),
+                InlineKeyboardButton(text="Отмена", callback_data=f"admin:user:{user_id}"),
+            ],
+        ]
+    )
 
 
 async def _format_users_list(db: Database) -> tuple[str, InlineKeyboardMarkup]:
@@ -130,8 +143,9 @@ async def admin_add_cb(callback: CallbackQuery, user: User | None, state: FSMCon
     await callback.message.edit_text(
         "<b>➕ Добавить пользователя</b>\n\n"
         "Отправьте Telegram ID нового пользователя.\n"
-        "Человек может узнать ID, отправив боту /start (он увидит его, если доступа ещё нет).\n\n"
-        "Или перешлите любое сообщение от этого человека.",
+        "Человек может узнать ID, отправив боту /start.\n\n"
+        "Или перешлите любое сообщение от этого человека.\n"
+        "Если ID не определяется — у пользователя скрыта пересылка, введите ID вручную.",
         parse_mode="HTML",
     )
     await callback.answer()
@@ -146,28 +160,23 @@ async def admin_add_id(message: Message, user: User | None, db: Database, state:
     target_id: int | None = None
     profile: dict[str, str | None] = {}
 
-    if message.forward_from:
-        target_id = message.forward_from.id
-        profile = {
-            "username": message.forward_from.username,
-            "first_name": message.forward_from.first_name,
-            "last_name": message.forward_from.last_name,
-        }
-    elif message.forward_origin and getattr(message.forward_origin, "sender_user", None):
-        sender = message.forward_origin.sender_user
-        target_id = sender.id
-        profile = {
-            "username": sender.username,
-            "first_name": sender.first_name,
-            "last_name": sender.last_name,
-        }
-    elif (message.text or "").strip().isdigit():
-        target_id = int((message.text or "").strip())
-        profile = {}
-    else:
-        sent = await message.answer("Отправьте числовой ID или перешлите сообщение пользователя.")
+    shared_ids = extract_shared_user_ids(message)
+    if len(shared_ids) == 1:
+        target_id = shared_ids[0]
+    elif len(shared_ids) > 1:
+        sent = await message.answer("Выберите одного пользователя — отправьте одну пересылку или один ID.")
         await track_message(message.from_user.id, sent.message_id)
         return
+    else:
+        forwarded = extract_forwarded_user(message)
+        if forwarded:
+            target_id, profile = forwarded
+        elif (message.text or "").strip().isdigit():
+            target_id = int((message.text or "").strip())
+        else:
+            sent = await message.answer(forwarded_user_error_hint(message))
+            await track_message(message.from_user.id, sent.message_id)
+            return
 
     await db.upsert_user(target_id, active=True, role="user", **profile)
     await state.clear()
@@ -253,18 +262,70 @@ async def admin_demote_cb(callback: CallbackQuery, user: User | None, db: Databa
     await callback.answer("Роль изменена")
 
 
+@router.callback_query(F.data.startswith("admin:delete_user_confirm:"))
+async def admin_delete_user_confirm_cb(callback: CallbackQuery, user: User | None, db: Database) -> None:
+    if not _require_admin(user):
+        await callback.answer("Только для администраторов", show_alert=True)
+        return
+    target_id = int(callback.data.split(":")[-1])
+    if target_id == user.user_id:
+        await callback.answer("Нельзя удалить себя", show_alert=True)
+        return
+    target = await db.get_user(target_id)
+    if not target:
+        await callback.answer("Уже удалён", show_alert=True)
+        return
+    name = target.display_name
+    if not await db.delete_user(target_id):
+        await callback.answer("Не удалось удалить", show_alert=True)
+        return
+    text, kb = await _format_users_list(db)
+    await callback.message.edit_text(
+        f"🗑 Пользователь <b>{name}</b> удалён.\n\n{text}",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+    await callback.answer("Удалено")
+
+
+@router.callback_query(F.data.startswith("admin:delete_user:"))
+async def admin_delete_user_cb(callback: CallbackQuery, user: User | None, db: Database) -> None:
+    if not _require_admin(user):
+        await callback.answer("Только для администраторов", show_alert=True)
+        return
+    target_id = int(callback.data.split(":")[-1])
+    if target_id == user.user_id:
+        await callback.answer("Нельзя удалить себя", show_alert=True)
+        return
+    target = await db.get_user(target_id)
+    if not target:
+        await callback.answer("Не найден", show_alert=True)
+        return
+    alerts = await db.count_user_alerts(target_id)
+    await callback.message.edit_text(
+        f"Удалить пользователя <b>{target.display_name}</b>?\n\n"
+        f"🆔 <code>{target_id}</code>\n"
+        f"📌 Подписок: {alerts}\n\n"
+        "Будут удалены все подписки и данные пользователя. Это нельзя отменить.",
+        parse_mode="HTML",
+        reply_markup=admin_user_delete_confirm_keyboard(target_id),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data == "admin:back_settings")
 async def admin_back_settings(callback: CallbackQuery, user: User | None, db: Database) -> None:
-    from bot.handlers.settings import format_settings_text, settings_keyboard
     from bot.config import get_settings
+    from bot.handlers.settings import settings_screen
 
     if not user:
         await callback.answer()
         return
     app_settings = get_settings()
+    text, keyboard = await settings_screen(db, user, app_settings)
     await callback.message.edit_text(
-        format_settings_text(user, app_settings),
+        text,
         parse_mode="HTML",
-        reply_markup=settings_keyboard(user),
+        reply_markup=keyboard,
     )
     await callback.answer()

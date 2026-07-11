@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+from asyncio import Lock
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +11,8 @@ from typing import Any, AsyncIterator
 from urllib.parse import parse_qs, urlparse
 
 import aiosqlite
+
+from bot.access_config import ACCESS_MODE_KEY, normalize_access_mode
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,24 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
+
+CREATE TABLE IF NOT EXISTS notification_messages (
+    user_id INTEGER NOT NULL,
+    alert_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, message_id),
+    FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_messages_user ON notification_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_notification_messages_alert ON notification_messages(alert_id);
+
+CREATE TABLE IF NOT EXISTS bot_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -63,9 +85,12 @@ class Alert:
 
     @property
     def search_params(self) -> dict[str, str]:
+        from bot.kufar_params import normalize_params_for_api
         from bot.price import prc_for_api
 
-        params = {k: v for k, v in self.params.items() if not str(k).startswith("_")}
+        params = normalize_params_for_api(
+            {k: str(v) for k, v in self.params.items() if not str(k).startswith("_")}
+        )
         if "prc" in params:
             api_prc = prc_for_api(params["prc"])
             if api_prc:
@@ -80,6 +105,7 @@ class Database:
     def __init__(self, path: str) -> None:
         self.path = path
         self._ready = False
+        self._settings_locks: dict[int, Lock] = defaultdict(Lock)
 
     async def init(self, admin_user_ids: tuple[int, ...] = ()) -> None:
         db_path = Path(self.path)
@@ -140,6 +166,8 @@ class Database:
 
     @staticmethod
     def _normalize_params(params: dict[str, Any]) -> dict[str, Any]:
+        from bot.kufar_params import normalize_params_for_storage
+
         params = {k: v for k, v in params.items() if not str(k).startswith("_")}
         if params.get("prc"):
             from bot.price import normalize_prc
@@ -149,7 +177,7 @@ class Database:
                 params["prc"] = normalized
             else:
                 params.pop("prc", None)
-        return params
+        return normalize_params_for_storage({k: str(v) for k, v in params.items() if v})
 
     async def create_alert(
         self,
@@ -223,6 +251,10 @@ class Database:
 
     async def delete_alert(self, alert_id: int, user_id: int) -> bool:
         async with self._db() as db:
+            await db.execute(
+                "DELETE FROM notification_messages WHERE alert_id = ? AND user_id = ?",
+                (alert_id, user_id),
+            )
             await db.execute("DELETE FROM seen_ads WHERE alert_id = ?", (alert_id,))
             cursor = await db.execute(
                 "DELETE FROM alerts WHERE id = ? AND user_id = ?",
@@ -230,6 +262,113 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def record_notification(
+        self,
+        user_id: int,
+        alert_id: int,
+        chat_id: int,
+        message_id: int,
+    ) -> None:
+        async with self._db() as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO notification_messages
+                    (user_id, alert_id, chat_id, message_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, alert_id, chat_id, message_id),
+            )
+            await db.commit()
+
+    async def forget_notification(self, user_id: int, message_id: int) -> None:
+        async with self._db() as db:
+            await db.execute(
+                "DELETE FROM notification_messages WHERE user_id = ? AND message_id = ?",
+                (user_id, message_id),
+            )
+            await db.commit()
+
+    async def pop_notification_messages(
+        self,
+        user_id: int,
+        *,
+        alert_id: int | None = None,
+    ) -> list[tuple[int, int]]:
+        async with self._db() as db:
+            if alert_id is None:
+                cursor = await db.execute(
+                    """
+                    SELECT chat_id, message_id
+                    FROM notification_messages
+                    WHERE user_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (user_id,),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT chat_id, message_id
+                    FROM notification_messages
+                    WHERE user_id = ? AND alert_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (user_id, alert_id),
+                )
+            rows = await cursor.fetchall()
+            if alert_id is None:
+                await db.execute(
+                    "DELETE FROM notification_messages WHERE user_id = ?",
+                    (user_id,),
+                )
+            else:
+                await db.execute(
+                    "DELETE FROM notification_messages WHERE user_id = ? AND alert_id = ?",
+                    (user_id, alert_id),
+                )
+            await db.commit()
+        return [(int(chat_id), int(message_id)) for chat_id, message_id in rows]
+
+    async def count_notification_messages(
+        self,
+        user_id: int,
+        *,
+        alert_id: int | None = None,
+    ) -> int:
+        async with self._db() as db:
+            if alert_id is None:
+                row = await (
+                    await db.execute(
+                        "SELECT COUNT(*) FROM notification_messages WHERE user_id = ?",
+                        (user_id,),
+                    )
+                ).fetchone()
+            else:
+                row = await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) FROM notification_messages
+                        WHERE user_id = ? AND alert_id = ?
+                        """,
+                        (user_id, alert_id),
+                    )
+                ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def get_notification_counts_by_alert(self, user_id: int) -> dict[int, int]:
+        async with self._db() as db:
+            cursor = await db.execute(
+                """
+                SELECT alert_id, COUNT(*)
+                FROM notification_messages
+                WHERE user_id = ?
+                GROUP BY alert_id
+                """,
+                (user_id,),
+            )
+            rows = await cursor.fetchall()
+        return {int(alert_id): int(count) for alert_id, count in rows if count}
 
     async def update_alert(
         self,
@@ -280,6 +419,14 @@ class Database:
         async with self._db() as db:
             await db.execute("DELETE FROM seen_ads WHERE alert_id = ?", (alert_id,))
             await db.commit()
+
+    async def count_seen(self, alert_id: int) -> int:
+        async with self._db() as db:
+            row = await (await db.execute(
+                "SELECT COUNT(*) FROM seen_ads WHERE alert_id = ?",
+                (alert_id,),
+            )).fetchone()
+        return int(row[0]) if row else 0
 
     async def mark_seen(self, alert_id: int, ad_ids: list[int]) -> None:
         if not ad_ids:
@@ -445,32 +592,75 @@ class Database:
             await db.commit()
             return cursor.rowcount > 0
 
-    async def update_user_settings(self, user_id: int, settings: dict[str, Any]) -> "User | None":
-        user = await self.get_user(user_id)
-        if not user:
-            return None
-        merged = {**user.settings.to_dict(), **settings}
-        if isinstance(settings.get("notification_display"), dict):
-            merged["notification_display"] = {
-                **user.settings.notification_display.to_dict(),
-                **settings["notification_display"],
-            }
-        if settings.get("poll_interval") is None and "poll_interval" in settings:
-            merged.pop("poll_interval", None)
-        for key, value in list(merged.items()):
-            if value is None:
-                merged.pop(key, None)
+    async def delete_user(self, user_id: int) -> bool:
         async with self._db() as db:
-            await db.execute(
-                "UPDATE users SET settings_json = ? WHERE user_id = ?",
-                (json.dumps(merged, ensure_ascii=False), user_id),
-            )
+            row = await (
+                await db.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+            ).fetchone()
+            if not row:
+                return False
+            await db.execute("DELETE FROM alerts WHERE user_id = ?", (user_id,))
+            await db.execute("DELETE FROM notification_messages WHERE user_id = ?", (user_id,))
+            cursor = await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
             await db.commit()
-        return await self.get_user(user_id)
+            return cursor.rowcount > 0
+
+    async def update_user_settings(self, user_id: int, settings: dict[str, Any]) -> "User | None":
+        async with self._settings_locks[user_id]:
+            user = await self.get_user(user_id)
+            if not user:
+                return None
+            merged = {**user.settings.to_dict(), **settings}
+            if isinstance(settings.get("notification_display"), dict):
+                merged["notification_display"] = {
+                    **user.settings.notification_display.to_dict(),
+                    **settings["notification_display"],
+                }
+            if settings.get("poll_interval") is None and "poll_interval" in settings:
+                merged.pop("poll_interval", None)
+            if settings.get("ui_message_id") is None and "ui_message_id" in settings:
+                merged.pop("ui_message_id", None)
+            for key, value in list(merged.items()):
+                if value is None:
+                    merged.pop(key, None)
+            async with self._db() as db:
+                await db.execute(
+                    "UPDATE users SET settings_json = ? WHERE user_id = ?",
+                    (json.dumps(merged, ensure_ascii=False), user_id),
+                )
+                await db.commit()
+            return await self.get_user(user_id)
 
     async def is_user_allowed(self, user_id: int) -> bool:
         user = await self.get_user(user_id)
         return user is not None and user.active
+
+    async def get_bot_config(self, key: str) -> str | None:
+        async with self._db() as db:
+            row = await (
+                await db.execute("SELECT value FROM bot_config WHERE key = ?", (key,))
+            ).fetchone()
+        return row[0] if row else None
+
+    async def set_bot_config(self, key: str, value: str) -> None:
+        async with self._db() as db:
+            await db.execute(
+                """
+                INSERT INTO bot_config (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+            await db.commit()
+
+    async def get_access_mode(self, default: str) -> str:
+        stored = await self.get_bot_config(ACCESS_MODE_KEY)
+        return normalize_access_mode(stored, default=normalize_access_mode(default))
+
+    async def set_access_mode(self, mode: str, *, default: str) -> str:
+        normalized = normalize_access_mode(mode, default=normalize_access_mode(default))
+        await self.set_bot_config(ACCESS_MODE_KEY, normalized)
+        return normalized
 
 
 def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:

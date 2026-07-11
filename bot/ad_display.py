@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import html
 from dataclasses import dataclass
 from datetime import timedelta, timezone
@@ -59,10 +60,35 @@ SKIP_DETAIL_PARAMS = frozenset(
 MAX_DETAIL_LINES = 8
 
 
+def format_param_value(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, list):
+        parts = [format_param_value(item) for item in raw]
+        return ", ".join(part for part in parts if part)
+    if isinstance(raw, dict):
+        parts = [str(value).strip() for value in raw.values() if value not in (None, "")]
+        return ", ".join(part for part in parts if part)
+    text = str(raw).strip()
+    if not text:
+        return ""
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, list):
+                return ", ".join(format_param_value(item) for item in parsed if item not in (None, ""))
+        except (SyntaxError, ValueError):
+            inner = text[1:-1].strip()
+            if inner:
+                parts = [part.strip().strip("'\"") for part in inner.split(",")]
+                return ", ".join(part for part in parts if part)
+    return text
+
+
 def get_param_value(ad: dict[str, Any], param_name: str) -> str:
     for param in ad.get("ad_parameters") or []:
         if param.get("p") == param_name:
-            return str(param.get("vl") or "")
+            return format_param_value(param.get("vl"))
     return ""
 
 
@@ -78,12 +104,16 @@ def format_ad_location(ad: dict[str, Any]) -> str:
     return region or area or ""
 
 
-def format_posted_at(ad: dict[str, Any]) -> str:
+def format_posted_at(ad: dict[str, Any], *, compact: bool = False) -> str:
     dt = parse_iso_time(ad.get("list_time"))
     if dt is None:
         return ""
     local = dt.astimezone(BY_OFFSET)
-    return local.strftime("%d.%m.%Y %H:%M")
+    date_part = local.strftime("%d.%m") if compact else local.strftime("%d.%m.%Y")
+    time_part = local.strftime("%H:%M")
+    # Разделитель даты и времени: сейчас « · ». Чтобы убрать — замените на пробел
+    # или склейте в одну строку: return f"{date_part} {time_part}"
+    return f"{date_part} · {time_part}"
 
 
 def format_seller(ad: dict[str, Any]) -> str:
@@ -106,7 +136,7 @@ def _collect_detail_lines(ad: dict[str, Any]) -> list[str]:
         if not param:
             return
         label = str(param.get("pl") or "").strip()
-        value = str(param.get("vl") or "").strip()
+        value = format_param_value(param.get("vl"))
         if not value:
             return
         seen.add(name)
@@ -137,55 +167,3 @@ def _collect_detail_lines(ad: dict[str, Any]) -> list[str]:
 
     return lines
 
-
-def format_ad_message(
-    ad: dict[str, Any],
-    *,
-    display: NotificationDisplay | None = None,
-) -> str:
-    prefs = display or NotificationDisplay()
-    subject = html.escape(ad.get("subject") or "Без названия")
-    link = ad.get("ad_link") or f"https://www.kufar.by/item/{ad.get('ad_id')}"
-
-    lines = [f"<b>{subject}</b>"]
-
-    if prefs.price:
-        lines.append(f"💰 {html.escape(format_price(ad))}")
-
-    if prefs.location:
-        location = format_ad_location(ad)
-        if location:
-            lines.append(f"📍 {html.escape(location)}")
-
-    if prefs.category:
-        category = get_param_value(ad, "category")
-        if category:
-            lines.append(f"📂 {html.escape(category)}")
-
-    if prefs.condition:
-        condition = get_param_value(ad, "condition")
-        if condition:
-            lines.append(f"✨ {html.escape(condition)}")
-
-    if prefs.delivery:
-        delivery = get_param_value(ad, "delivery_enabled")
-        if delivery:
-            lines.append(f"📦 Доставка: {html.escape(delivery)}")
-
-    if prefs.seller:
-        lines.append(f"👤 {html.escape(format_seller(ad))}")
-
-    if prefs.posted_at:
-        posted = format_posted_at(ad)
-        if posted:
-            lines.append(f"🕐 {html.escape(posted)}")
-
-    if prefs.details:
-        details = _collect_detail_lines(ad)
-        if details:
-            lines.append("📋 " + html.escape(details[0]))
-            for detail in details[1:]:
-                lines.append(html.escape(detail))
-
-    lines.append(f'🔗 <a href="{link}">Открыть на Kufar</a>')
-    return "\n".join(lines)
