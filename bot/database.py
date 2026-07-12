@@ -116,8 +116,7 @@ class Database:
             self.dsn,
             min_size=1,
             max_size=5,
-            command_timeout=60,
-            statement_timeout=60
+            timeout=60.0,  # Время ожидания для получения соединения из пула
         )
         
         async with self._db() as conn:
