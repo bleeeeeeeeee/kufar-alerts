@@ -8,12 +8,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- НОВАЯ ПЕРЕМЕННАЯ ДЛЯ AIVEN ---
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or None
+
 
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
     poll_interval: int
-    database_path: str
+    database_path: str  # для SQLite (если используется)
+    database_url: str | None  # для PostgreSQL (Aiven)
     search_size: int
     admin_user_ids: tuple[int, ...]
     access_mode: str  # open | invite
@@ -21,6 +25,11 @@ class Settings:
     webhook_url: str | None
     webhook_path: str
     webhook_secret_token: str | None
+
+    @property
+    def use_postgres(self) -> bool:
+        """Проверяет, используем ли мы PostgreSQL."""
+        return bool(self.database_url)
 
 
 def _parse_admin_ids(raw: str) -> tuple[int, ...]:
@@ -69,10 +78,14 @@ def get_settings() -> Settings:
 
     webhook_secret_token = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip() or None
 
+    # --- ПОЛУЧАЕМ DATABASE_URL ---
+    database_url = os.getenv("DATABASE_URL", "").strip() or None
+
     return Settings(
         bot_token=token,
         poll_interval=max(15, int(os.getenv("POLL_INTERVAL", "45"))),
         database_path=_default_database_path(),
+        database_url=database_url,  # <-- НОВОЕ ПОЛЕ
         search_size=min(50, max(10, int(os.getenv("SEARCH_SIZE", "50")))),
         admin_user_ids=_parse_admin_ids(os.getenv("ADMIN_USER_IDS", "")),
         access_mode=access_mode,

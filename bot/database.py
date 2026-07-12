@@ -6,31 +6,31 @@ from asyncio import Lock
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, AsyncIterator
-from urllib.parse import parse_qs, urlparse
 
-import aiosqlite
+import asyncpg
+from asyncpg import Connection, Pool, Record
 
 from bot.access_config import ACCESS_MODE_KEY, normalize_access_mode
 
 logger = logging.getLogger(__name__)
 
+# Схема таблиц для PostgreSQL
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     name TEXT NOT NULL,
     query TEXT NOT NULL DEFAULT '',
     params_json TEXT NOT NULL DEFAULT '{}',
     active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS seen_ads (
     alert_id INTEGER NOT NULL,
     ad_id INTEGER NOT NULL,
-    seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (alert_id, ad_id),
     FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE
 );
@@ -40,25 +40,25 @@ CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
 CREATE INDEX IF NOT EXISTS idx_seen_ads_alert ON seen_ads(alert_id);
 
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     username TEXT,
     first_name TEXT,
     last_name TEXT,
     role TEXT NOT NULL DEFAULT 'user',
     active INTEGER NOT NULL DEFAULT 1,
     settings_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen_at TEXT
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
 
 CREATE TABLE IF NOT EXISTS notification_messages (
-    user_id INTEGER NOT NULL,
+    user_id BIGINT NOT NULL,
     alert_id INTEGER NOT NULL,
-    chat_id INTEGER NOT NULL,
+    chat_id BIGINT NOT NULL,
     message_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, message_id),
     FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE
 );
@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS bot_config (
     value TEXT NOT NULL
 );
 """
-
 
 @dataclass
 class Alert:
@@ -102,67 +101,81 @@ class Alert:
 
 
 class Database:
-    def __init__(self, path: str) -> None:
-        self.path = path
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+        self.pool: Pool | None = None
         self._ready = False
         self._settings_locks: dict[int, Lock] = defaultdict(Lock)
 
     async def init(self, admin_user_ids: tuple[int, ...] = ()) -> None:
-        db_path = Path(self.path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info("Database path: %s (exists=%s)", self.path, db_path.exists())
+        """Инициализация пула соединений и создание таблиц."""
+        logger.info("Connecting to PostgreSQL database...")
+        
+        # Создаем пул соединений
+        self.pool = await asyncpg.create_pool(
+            self.dsn,
+            min_size=1,
+            max_size=5,
+            command_timeout=60,
+            statement_timeout=60
+        )
+        
+        async with self._db() as conn:
+            # Создаем таблицы
+            await conn.execute(SCHEMA)
+            logger.info("Database schema created/verified")
 
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA foreign_keys=ON")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.executescript(SCHEMA)
-            await db.commit()
-
+        # Создаем администраторов
         await self._bootstrap_users(admin_user_ids)
 
+        # Получаем статистику
         alerts, seen = await self.stats()
         users = await self.count_users()
         logger.info("Database ready: %s alerts, %s seen, %s users", alerts, seen, users)
         self._ready = True
 
     async def count_users(self) -> int:
-        async with self._db() as db:
-            row = await (await db.execute("SELECT COUNT(*) FROM users")).fetchone()
-        return int(row[0])
+        async with self._db() as conn:
+            row = await conn.fetchrow("SELECT COUNT(*) FROM users")
+        return row[0] if row else 0
 
     async def _bootstrap_users(self, admin_user_ids: tuple[int, ...]) -> None:
-        async with self._db() as db:
-            await db.execute(
-                """
-                INSERT OR IGNORE INTO users (user_id, active)
-                SELECT DISTINCT user_id, 1 FROM alerts
-                """
-            )
+        if not admin_user_ids:
+            return
+        async with self._db() as conn:
+            # Добавляем администраторов
             for admin_id in admin_user_ids:
-                await db.execute(
+                await conn.execute(
                     """
                     INSERT INTO users (user_id, role, active)
-                    VALUES (?, 'admin', 1)
-                    ON CONFLICT(user_id) DO UPDATE SET role = 'admin', active = 1
+                    VALUES ($1, 'admin', 1)
+                    ON CONFLICT (user_id) DO UPDATE 
+                    SET role = 'admin', active = 1
                     """,
-                    (admin_id,),
+                    admin_id,
                 )
-            await db.commit()
+            # Активируем пользователей, у которых есть подписки
+            await conn.execute(
+                """
+                UPDATE users 
+                SET active = 1 
+                WHERE user_id IN (SELECT DISTINCT user_id FROM alerts)
+                """
+            )
 
     async def stats(self) -> tuple[int, int]:
-        async with self._db() as db:
-            alerts = (await (await db.execute("SELECT COUNT(*) FROM alerts")).fetchone())[0]
-            seen = (await (await db.execute("SELECT COUNT(*) FROM seen_ads")).fetchone())[0]
-        return int(alerts), int(seen)
+        async with self._db() as conn:
+            alerts = await conn.fetchval("SELECT COUNT(*) FROM alerts")
+            seen = await conn.fetchval("SELECT COUNT(*) FROM seen_ads")
+        return alerts or 0, seen or 0
 
     @asynccontextmanager
-    async def _db(self) -> AsyncIterator[aiosqlite.Connection]:
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.path) as db:
-            db.row_factory = aiosqlite.Row
-            await db.execute("PRAGMA foreign_keys=ON")
-            yield db
+    async def _db(self) -> AsyncIterator[Connection]:
+        """Получение соединения из пула."""
+        if not self.pool:
+            raise RuntimeError("Database not initialized")
+        async with self.pool.acquire() as conn:
+            yield conn
 
     @staticmethod
     def _normalize_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -189,33 +202,33 @@ class Database:
         active: bool = True,
     ) -> Alert:
         params = self._normalize_params(params or {})
-        async with self._db() as db:
-            cursor = await db.execute(
+        async with self._db() as conn:
+            row = await conn.fetchrow(
                 """
                 INSERT INTO alerts (user_id, name, query, params_json, active)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, created_at
                 """,
-                (user_id, name, query, json.dumps(params, ensure_ascii=False), 1 if active else 0),
+                user_id, name, query, json.dumps(params, ensure_ascii=False), 1 if active else 0,
             )
-            await db.commit()
-            alert_id = cursor.lastrowid
+            alert_id = row["id"]
+            created_at = row["created_at"]
         logger.info("Created alert %s for user %s", alert_id, user_id)
         alert = await self.get_alert(alert_id)
         assert alert is not None
         return alert
 
     async def get_user_alerts(self, user_id: int) -> list[Alert]:
-        async with self._db() as db:
-            cursor = await db.execute(
-                "SELECT * FROM alerts WHERE user_id = ? ORDER BY id DESC",
-                (user_id,),
+        async with self._db() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM alerts WHERE user_id = $1 ORDER BY id DESC",
+                user_id,
             )
-            rows = await cursor.fetchall()
         return [self._row_to_alert(row) for row in rows]
 
     async def get_active_alerts(self) -> list[Alert]:
-        async with self._db() as db:
-            cursor = await db.execute(
+        async with self._db() as conn:
+            rows = await conn.fetch(
                 """
                 SELECT a.* FROM alerts a
                 WHERE a.active = 1
@@ -225,43 +238,43 @@ class Database:
                   )
                 """
             )
-            rows = await cursor.fetchall()
         return [self._row_to_alert(row) for row in rows]
 
     async def get_alert(self, alert_id: int, user_id: int | None = None) -> Alert | None:
-        async with self._db() as db:
+        async with self._db() as conn:
             if user_id is not None:
-                cursor = await db.execute(
-                    "SELECT * FROM alerts WHERE id = ? AND user_id = ?",
-                    (alert_id, user_id),
+                row = await conn.fetchrow(
+                    "SELECT * FROM alerts WHERE id = $1 AND user_id = $2",
+                    alert_id, user_id,
                 )
             else:
-                cursor = await db.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,))
-            row = await cursor.fetchone()
+                row = await conn.fetchrow(
+                    "SELECT * FROM alerts WHERE id = $1",
+                    alert_id,
+                )
         return self._row_to_alert(row) if row else None
 
     async def set_alert_active(self, alert_id: int, user_id: int, active: bool) -> bool:
-        async with self._db() as db:
-            cursor = await db.execute(
-                "UPDATE alerts SET active = ? WHERE id = ? AND user_id = ?",
-                (1 if active else 0, alert_id, user_id),
+        async with self._db() as conn:
+            result = await conn.execute(
+                "UPDATE alerts SET active = $1 WHERE id = $2 AND user_id = $3",
+                1 if active else 0, alert_id, user_id,
             )
-            await db.commit()
-            return cursor.rowcount > 0
+            return result != "UPDATE 0"
 
     async def delete_alert(self, alert_id: int, user_id: int) -> bool:
-        async with self._db() as db:
-            await db.execute(
-                "DELETE FROM notification_messages WHERE alert_id = ? AND user_id = ?",
-                (alert_id, user_id),
+        async with self._db() as conn:
+            # Сначала удаляем связанные записи
+            await conn.execute(
+                "DELETE FROM notification_messages WHERE alert_id = $1 AND user_id = $2",
+                alert_id, user_id,
             )
-            await db.execute("DELETE FROM seen_ads WHERE alert_id = ?", (alert_id,))
-            cursor = await db.execute(
-                "DELETE FROM alerts WHERE id = ? AND user_id = ?",
-                (alert_id, user_id),
+            await conn.execute("DELETE FROM seen_ads WHERE alert_id = $1", alert_id)
+            result = await conn.execute(
+                "DELETE FROM alerts WHERE id = $1 AND user_id = $2",
+                alert_id, user_id,
             )
-            await db.commit()
-            return cursor.rowcount > 0
+            return result != "DELETE 0"
 
     async def record_notification(
         self,
@@ -270,24 +283,24 @@ class Database:
         chat_id: int,
         message_id: int,
     ) -> None:
-        async with self._db() as db:
-            await db.execute(
+        async with self._db() as conn:
+            await conn.execute(
                 """
-                INSERT OR REPLACE INTO notification_messages
-                    (user_id, alert_id, chat_id, message_id)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO notification_messages (user_id, alert_id, chat_id, message_id)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id, message_id) DO UPDATE SET
+                    alert_id = EXCLUDED.alert_id,
+                    chat_id = EXCLUDED.chat_id
                 """,
-                (user_id, alert_id, chat_id, message_id),
+                user_id, alert_id, chat_id, message_id,
             )
-            await db.commit()
 
     async def forget_notification(self, user_id: int, message_id: int) -> None:
-        async with self._db() as db:
-            await db.execute(
-                "DELETE FROM notification_messages WHERE user_id = ? AND message_id = ?",
-                (user_id, message_id),
+        async with self._db() as conn:
+            await conn.execute(
+                "DELETE FROM notification_messages WHERE user_id = $1 AND message_id = $2",
+                user_id, message_id,
             )
-            await db.commit()
 
     async def pop_notification_messages(
         self,
@@ -295,40 +308,36 @@ class Database:
         *,
         alert_id: int | None = None,
     ) -> list[tuple[int, int]]:
-        async with self._db() as db:
+        async with self._db() as conn:
             if alert_id is None:
-                cursor = await db.execute(
+                rows = await conn.fetch(
                     """
                     SELECT chat_id, message_id
                     FROM notification_messages
-                    WHERE user_id = ?
+                    WHERE user_id = $1
                     ORDER BY created_at ASC
                     """,
-                    (user_id,),
+                    user_id,
+                )
+                await conn.execute(
+                    "DELETE FROM notification_messages WHERE user_id = $1",
+                    user_id,
                 )
             else:
-                cursor = await db.execute(
+                rows = await conn.fetch(
                     """
                     SELECT chat_id, message_id
                     FROM notification_messages
-                    WHERE user_id = ? AND alert_id = ?
+                    WHERE user_id = $1 AND alert_id = $2
                     ORDER BY created_at ASC
                     """,
-                    (user_id, alert_id),
+                    user_id, alert_id,
                 )
-            rows = await cursor.fetchall()
-            if alert_id is None:
-                await db.execute(
-                    "DELETE FROM notification_messages WHERE user_id = ?",
-                    (user_id,),
+                await conn.execute(
+                    "DELETE FROM notification_messages WHERE user_id = $1 AND alert_id = $2",
+                    user_id, alert_id,
                 )
-            else:
-                await db.execute(
-                    "DELETE FROM notification_messages WHERE user_id = ? AND alert_id = ?",
-                    (user_id, alert_id),
-                )
-            await db.commit()
-        return [(int(chat_id), int(message_id)) for chat_id, message_id in rows]
+        return [(row["chat_id"], row["message_id"]) for row in rows]
 
     async def count_notification_messages(
         self,
@@ -336,39 +345,34 @@ class Database:
         *,
         alert_id: int | None = None,
     ) -> int:
-        async with self._db() as db:
+        async with self._db() as conn:
             if alert_id is None:
-                row = await (
-                    await db.execute(
-                        "SELECT COUNT(*) FROM notification_messages WHERE user_id = ?",
-                        (user_id,),
-                    )
-                ).fetchone()
+                count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM notification_messages WHERE user_id = $1",
+                    user_id,
+                )
             else:
-                row = await (
-                    await db.execute(
-                        """
-                        SELECT COUNT(*) FROM notification_messages
-                        WHERE user_id = ? AND alert_id = ?
-                        """,
-                        (user_id, alert_id),
-                    )
-                ).fetchone()
-        return int(row[0]) if row else 0
+                count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM notification_messages
+                    WHERE user_id = $1 AND alert_id = $2
+                    """,
+                    user_id, alert_id,
+                )
+        return count or 0
 
     async def get_notification_counts_by_alert(self, user_id: int) -> dict[int, int]:
-        async with self._db() as db:
-            cursor = await db.execute(
+        async with self._db() as conn:
+            rows = await conn.fetch(
                 """
-                SELECT alert_id, COUNT(*)
+                SELECT alert_id, COUNT(*) as count
                 FROM notification_messages
-                WHERE user_id = ?
+                WHERE user_id = $1
                 GROUP BY alert_id
                 """,
-                (user_id,),
+                user_id,
             )
-            rows = await cursor.fetchall()
-        return {int(alert_id): int(count) for alert_id, count in rows if count}
+        return {row["alert_id"]: row["count"] for row in rows if row["count"] > 0}
 
     async def update_alert(
         self,
@@ -388,22 +392,15 @@ class Database:
         new_params = params if params is not None else alert.params
         new_params = self._normalize_params(new_params)
 
-        async with self._db() as db:
-            await db.execute(
+        async with self._db() as conn:
+            await conn.execute(
                 """
                 UPDATE alerts
-                SET name = ?, query = ?, params_json = ?
-                WHERE id = ? AND user_id = ?
+                SET name = $1, query = $2, params_json = $3
+                WHERE id = $4 AND user_id = $5
                 """,
-                (
-                    new_name,
-                    new_query,
-                    json.dumps(new_params, ensure_ascii=False),
-                    alert_id,
-                    user_id,
-                ),
+                new_name, new_query, json.dumps(new_params, ensure_ascii=False), alert_id, user_id,
             )
-            await db.commit()
 
         return Alert(
             id=alert_id,
@@ -416,56 +413,62 @@ class Database:
         )
 
     async def clear_seen(self, alert_id: int) -> None:
-        async with self._db() as db:
-            await db.execute("DELETE FROM seen_ads WHERE alert_id = ?", (alert_id,))
-            await db.commit()
+        async with self._db() as conn:
+            await conn.execute("DELETE FROM seen_ads WHERE alert_id = $1", alert_id)
 
     async def count_seen(self, alert_id: int) -> int:
-        async with self._db() as db:
-            row = await (await db.execute(
-                "SELECT COUNT(*) FROM seen_ads WHERE alert_id = ?",
-                (alert_id,),
-            )).fetchone()
-        return int(row[0]) if row else 0
+        async with self._db() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM seen_ads WHERE alert_id = $1",
+                alert_id,
+            )
+        return count or 0
 
     async def mark_seen(self, alert_id: int, ad_ids: list[int]) -> None:
         if not ad_ids:
             return
-        async with self._db() as db:
-            await db.executemany(
-                "INSERT OR IGNORE INTO seen_ads (alert_id, ad_id) VALUES (?, ?)",
-                [(alert_id, ad_id) for ad_id in ad_ids],
-            )
-            await db.commit()
+        async with self._db() as conn:
+            # Используем COPY для массовой вставки, если много данных
+            if len(ad_ids) > 100:
+                await conn.executemany(
+                    "INSERT INTO seen_ads (alert_id, ad_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [(alert_id, ad_id) for ad_id in ad_ids],
+                )
+            else:
+                for ad_id in ad_ids:
+                    await conn.execute(
+                        "INSERT INTO seen_ads (alert_id, ad_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                        alert_id, ad_id,
+                    )
 
     async def filter_unseen(self, alert_id: int, ad_ids: list[int]) -> list[int]:
         if not ad_ids:
             return []
-        placeholders = ",".join("?" * len(ad_ids))
-        async with self._db() as db:
-            cursor = await db.execute(
-                f"""
+        async with self._db() as conn:
+            # Используем ANY для эффективного поиска
+            rows = await conn.fetch(
+                """
                 SELECT ad_id FROM seen_ads
-                WHERE alert_id = ? AND ad_id IN ({placeholders})
+                WHERE alert_id = $1 AND ad_id = ANY($2::int[])
                 """,
-                [alert_id, *ad_ids],
+                alert_id, ad_ids,
             )
-            seen = {row[0] for row in await cursor.fetchall()}
+            seen = {row["ad_id"] for row in rows}
         return [ad_id for ad_id in ad_ids if ad_id not in seen]
 
     async def seed_seen(self, alert_id: int, ad_ids: list[int]) -> None:
         await self.mark_seen(alert_id, ad_ids)
 
     async def prune_old_seen(self, days: int = 30) -> int:
-        async with self._db() as db:
-            cursor = await db.execute(
-                "DELETE FROM seen_ads WHERE seen_at < datetime('now', ?)",
-                (f"-{days} days",),
+        async with self._db() as conn:
+            result = await conn.execute(
+                "DELETE FROM seen_ads WHERE seen_at < NOW() - INTERVAL '$1 DAYS'",
+                days,
             )
-            await db.commit()
-            return cursor.rowcount
+            # Парсим результат для получения количества удаленных строк
+            return int(result.split()[1]) if result and "DELETE" in result else 0
 
-    def _row_to_alert(self, row: aiosqlite.Row) -> Alert:
+    def _row_to_alert(self, row: Record) -> Alert:
         params = json.loads(row["params_json"] or "{}")
         return Alert(
             id=row["id"],
@@ -474,10 +477,10 @@ class Database:
             query=row["query"] or "",
             params=params,
             active=bool(row["active"]),
-            created_at=row["created_at"],
+            created_at=row["created_at"].isoformat() if row["created_at"] else None,
         )
 
-    def _row_to_user(self, row: aiosqlite.Row) -> "User":
+    def _row_to_user(self, row: Record) -> "User":
         from bot.users import User, UserSettings
 
         return User(
@@ -491,9 +494,8 @@ class Database:
         )
 
     async def get_user(self, user_id: int) -> "User | None":
-        async with self._db() as db:
-            cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-            row = await cursor.fetchone()
+        async with self._db() as conn:
+            row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         return self._row_to_user(row) if row else None
 
     async def list_users(self, *, active_only: bool = False) -> list["User"]:
@@ -501,17 +503,17 @@ class Database:
         if active_only:
             query += " WHERE active = 1"
         query += " ORDER BY role DESC, created_at ASC"
-        async with self._db() as db:
-            cursor = await db.execute(query)
-            rows = await cursor.fetchall()
+        async with self._db() as conn:
+            rows = await conn.fetch(query)
         return [self._row_to_user(row) for row in rows]
 
     async def count_user_alerts(self, user_id: int) -> int:
-        async with self._db() as db:
-            row = await (
-                await db.execute("SELECT COUNT(*) FROM alerts WHERE user_id = ?", (user_id,))
-            ).fetchone()
-        return int(row[0])
+        async with self._db() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM alerts WHERE user_id = $1",
+                user_id,
+            )
+        return count or 0
 
     async def upsert_user(
         self,
@@ -524,44 +526,39 @@ class Database:
         active: bool | None = None,
     ) -> "User":
         existing = await self.get_user(user_id)
-        async with self._db() as db:
+        async with self._db() as conn:
             if existing:
-                await db.execute(
+                await conn.execute(
                     """
                     UPDATE users
-                    SET username = COALESCE(?, username),
-                        first_name = COALESCE(?, first_name),
-                        last_name = COALESCE(?, last_name),
-                        role = COALESCE(?, role),
-                        active = COALESCE(?, active),
-                        last_seen_at = datetime('now')
-                    WHERE user_id = ?
+                    SET username = COALESCE($1, username),
+                        first_name = COALESCE($2, first_name),
+                        last_name = COALESCE($3, last_name),
+                        role = COALESCE($4, role),
+                        active = COALESCE($5, active),
+                        last_seen_at = NOW()
+                    WHERE user_id = $6
                     """,
-                    (
-                        username,
-                        first_name,
-                        last_name,
-                        role,
-                        None if active is None else (1 if active else 0),
-                        user_id,
-                    ),
+                    username,
+                    first_name,
+                    last_name,
+                    role,
+                    1 if active else 0 if active is not None else None,
+                    user_id,
                 )
             else:
-                await db.execute(
+                await conn.execute(
                     """
                     INSERT INTO users (user_id, username, first_name, last_name, role, active, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
                     """,
-                    (
-                        user_id,
-                        username,
-                        first_name,
-                        last_name,
-                        role or "user",
-                        1 if active is None else (1 if active else 0),
-                    ),
+                    user_id,
+                    username,
+                    first_name,
+                    last_name,
+                    role or "user",
+                    1 if active is None else (1 if active else 0),
                 )
-            await db.commit()
         user = await self.get_user(user_id)
         assert user is not None
         return user
@@ -575,35 +572,30 @@ class Database:
         )
 
     async def set_user_active(self, user_id: int, active: bool) -> bool:
-        async with self._db() as db:
-            cursor = await db.execute(
-                "UPDATE users SET active = ? WHERE user_id = ?",
-                (1 if active else 0, user_id),
+        async with self._db() as conn:
+            result = await conn.execute(
+                "UPDATE users SET active = $1 WHERE user_id = $2",
+                1 if active else 0, user_id,
             )
-            await db.commit()
-            return cursor.rowcount > 0
+            return result != "UPDATE 0"
 
     async def set_user_role(self, user_id: int, role: str) -> bool:
-        async with self._db() as db:
-            cursor = await db.execute(
-                "UPDATE users SET role = ? WHERE user_id = ?",
-                (role, user_id),
+        async with self._db() as conn:
+            result = await conn.execute(
+                "UPDATE users SET role = $1 WHERE user_id = $2",
+                role, user_id,
             )
-            await db.commit()
-            return cursor.rowcount > 0
+            return result != "UPDATE 0"
 
     async def delete_user(self, user_id: int) -> bool:
-        async with self._db() as db:
-            row = await (
-                await db.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-            ).fetchone()
+        async with self._db() as conn:
+            row = await conn.fetchrow("SELECT 1 FROM users WHERE user_id = $1", user_id)
             if not row:
                 return False
-            await db.execute("DELETE FROM alerts WHERE user_id = ?", (user_id,))
-            await db.execute("DELETE FROM notification_messages WHERE user_id = ?", (user_id,))
-            cursor = await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-            await db.commit()
-            return cursor.rowcount > 0
+            await conn.execute("DELETE FROM alerts WHERE user_id = $1", user_id)
+            await conn.execute("DELETE FROM notification_messages WHERE user_id = $1", user_id)
+            result = await conn.execute("DELETE FROM users WHERE user_id = $1", user_id)
+            return result != "DELETE 0"
 
     async def update_user_settings(self, user_id: int, settings: dict[str, Any]) -> "User | None":
         async with self._settings_locks[user_id]:
@@ -623,12 +615,11 @@ class Database:
             for key, value in list(merged.items()):
                 if value is None:
                     merged.pop(key, None)
-            async with self._db() as db:
-                await db.execute(
-                    "UPDATE users SET settings_json = ? WHERE user_id = ?",
-                    (json.dumps(merged, ensure_ascii=False), user_id),
+            async with self._db() as conn:
+                await conn.execute(
+                    "UPDATE users SET settings_json = $1 WHERE user_id = $2",
+                    json.dumps(merged, ensure_ascii=False), user_id,
                 )
-                await db.commit()
             return await self.get_user(user_id)
 
     async def is_user_allowed(self, user_id: int) -> bool:
@@ -636,22 +627,23 @@ class Database:
         return user is not None and user.active
 
     async def get_bot_config(self, key: str) -> str | None:
-        async with self._db() as db:
-            row = await (
-                await db.execute("SELECT value FROM bot_config WHERE key = ?", (key,))
-            ).fetchone()
-        return row[0] if row else None
+        async with self._db() as conn:
+            row = await conn.fetchrow(
+                "SELECT value FROM bot_config WHERE key = $1",
+                key,
+            )
+        return row["value"] if row else None
 
     async def set_bot_config(self, key: str, value: str) -> None:
-        async with self._db() as db:
-            await db.execute(
+        async with self._db() as conn:
+            await conn.execute(
                 """
-                INSERT INTO bot_config (key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                INSERT INTO bot_config (key, value)
+                VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
                 """,
-                (key, value),
+                key, value,
             )
-            await db.commit()
 
     async def get_access_mode(self, default: str) -> str:
         stored = await self.get_bot_config(ACCESS_MODE_KEY)
@@ -665,6 +657,8 @@ class Database:
 
 def parse_kufar_url(url: str) -> tuple[str, dict[str, str]]:
     """Extract search query and API params from a kufar.by search URL."""
+    from urllib.parse import parse_qs, urlparse
+
     parsed = urlparse(url.strip())
     if "kufar.by" not in parsed.netloc:
         raise ValueError("Это не ссылка с kufar.by")
