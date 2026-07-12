@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from asyncio import Lock
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -108,26 +109,24 @@ class Database:
         self._settings_locks: dict[int, Lock] = defaultdict(Lock)
 
     async def init(self, admin_user_ids: tuple[int, ...] = ()) -> None:
-        """Инициализация пула соединений и создание таблиц."""
         logger.info("Connecting to PostgreSQL database...")
         
-        # Создаем пул соединений
+        # Используем скачанный сертификат
+        ssl_context = ssl.create_default_context(cafile="ca.pem")
+        
         self.pool = await asyncpg.create_pool(
             self.dsn,
             min_size=1,
             max_size=5,
-            timeout=60.0,  # Время ожидания для получения соединения из пула
+            timeout=60.0,
+            ssl=ssl_context,
         )
         
         async with self._db() as conn:
-            # Создаем таблицы
             await conn.execute(SCHEMA)
             logger.info("Database schema created/verified")
 
-        # Создаем администраторов
         await self._bootstrap_users(admin_user_ids)
-
-        # Получаем статистику
         alerts, seen = await self.stats()
         users = await self.count_users()
         logger.info("Database ready: %s alerts, %s seen, %s users", alerts, seen, users)
