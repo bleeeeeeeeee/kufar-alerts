@@ -111,26 +111,23 @@ class Database:
         """Инициализация пула соединений и создание таблиц."""
         logger.info("Connecting to PostgreSQL database...")
         
-        # Создаем SSL-контекст с отключенной проверкой сертификата
-        import ssl
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
         # Создаем пул соединений
         self.pool = await asyncpg.create_pool(
             self.dsn,
             min_size=1,
             max_size=5,
-            timeout=60.0,
-            ssl=ssl_context,
+            timeout=60.0,  # Время ожидания для получения соединения из пула
         )
         
         async with self._db() as conn:
+            # Создаем таблицы
             await conn.execute(SCHEMA)
             logger.info("Database schema created/verified")
 
+        # Создаем администраторов
         await self._bootstrap_users(admin_user_ids)
+
+        # Получаем статистику
         alerts, seen = await self.stats()
         users = await self.count_users()
         logger.info("Database ready: %s alerts, %s seen, %s users", alerts, seen, users)
