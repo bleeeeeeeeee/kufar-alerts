@@ -109,10 +109,14 @@ class Database:
         self._settings_locks: dict[int, Lock] = defaultdict(Lock)
 
     async def init(self, admin_user_ids: tuple[int, ...] = ()) -> None:
+        """Инициализация пула соединений и создание таблиц."""
         logger.info("Connecting to PostgreSQL database...")
         
-        # Используем скачанный сертификат
-        ssl_context = ssl.create_default_context(cafile="ca.pem")
+        # Создаем SSL-контекст без проверки сертификата
+        # Это решает проблему CERTIFICATE_VERIFY_FAILED на Render
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
         
         self.pool = await asyncpg.create_pool(
             self.dsn,
@@ -141,7 +145,6 @@ class Database:
         if not admin_user_ids:
             return
         async with self._db() as conn:
-            # Добавляем администраторов
             for admin_id in admin_user_ids:
                 await conn.execute(
                     """
@@ -152,7 +155,6 @@ class Database:
                     """,
                     admin_id,
                 )
-            # Активируем пользователей, у которых есть подписки
             await conn.execute(
                 """
                 UPDATE users 
@@ -169,7 +171,6 @@ class Database:
 
     @asynccontextmanager
     async def _db(self) -> AsyncIterator[Connection]:
-        """Получение соединения из пула."""
         if not self.pool:
             raise RuntimeError("Database not initialized")
         async with self.pool.acquire() as conn:
@@ -210,7 +211,6 @@ class Database:
                 user_id, name, query, json.dumps(params, ensure_ascii=False), 1 if active else 0,
             )
             alert_id = row["id"]
-            created_at = row["created_at"]
         logger.info("Created alert %s for user %s", alert_id, user_id)
         alert = await self.get_alert(alert_id)
         assert alert is not None
@@ -262,7 +262,6 @@ class Database:
 
     async def delete_alert(self, alert_id: int, user_id: int) -> bool:
         async with self._db() as conn:
-            # Сначала удаляем связанные записи
             await conn.execute(
                 "DELETE FROM notification_messages WHERE alert_id = $1 AND user_id = $2",
                 alert_id, user_id,
@@ -426,7 +425,6 @@ class Database:
         if not ad_ids:
             return
         async with self._db() as conn:
-            # Используем COPY для массовой вставки, если много данных
             if len(ad_ids) > 100:
                 await conn.executemany(
                     "INSERT INTO seen_ads (alert_id, ad_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -443,7 +441,6 @@ class Database:
         if not ad_ids:
             return []
         async with self._db() as conn:
-            # Используем ANY для эффективного поиска
             rows = await conn.fetch(
                 """
                 SELECT ad_id FROM seen_ads
@@ -463,7 +460,6 @@ class Database:
                 "DELETE FROM seen_ads WHERE seen_at < NOW() - INTERVAL '$1 DAYS'",
                 days,
             )
-            # Парсим результат для получения количества удаленных строк
             return int(result.split()[1]) if result and "DELETE" in result else 0
 
     def _row_to_alert(self, row: Record) -> Alert:
