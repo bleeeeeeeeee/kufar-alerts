@@ -123,7 +123,7 @@ class AlertPoller:
 
         new_id_set = set(new_ids)
         new_ads = [ad for ad in ads if int(ad.get("ad_id", 0)) in new_id_set]
-        new_ads.sort(key=lambda ad: ad.get("list_time", ""), reverse=True)
+        new_ads.sort(key=lambda ad: ad.get("list_time", ""), reverse=False)
         logger.info("Alert %s: %s new ad(s) to process", alert.id, len(new_ads))
 
         notified_ids: list[int] = []
