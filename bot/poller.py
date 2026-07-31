@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
@@ -13,6 +14,7 @@ from bot.notifier import send_ad_notification
 from bot.seeding import auto_heal_unseen, bootstrap_active_alerts, seed_alert
 from bot.time_utils import is_ad_after_alert_created
 from bot.kufar import KufarClient, get_image_urls
+from bot.sync_to_neon import NeonSync  # Импортируем синхронизацию
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +31,26 @@ class AlertPoller:
         self.db = db
         self.kufar = kufar
         self.default_interval = interval
-        self.interval = min(15, interval)
+        self.interval = min(15, interval)  # Минимум 15 секунд для Kufar API
         self._task: asyncio.Task | None = None
         self._running = False
         self._alert_last_poll: dict[int, float] = {}
         self._user_last_notify: dict[int, float] = {}
+        
+        # Инициализация синхронизации с Neon
+        self.neon_sync = NeonSync()
+        self._sync_task: asyncio.Task | None = None
+        self._last_sync_time = None
+        self._sync_interval = timedelta(hours=12)  # 2 раза в день
 
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._running = True
             self._task = asyncio.create_task(self._loop(), name="alert-poller")
+            
+        # Запускаем фоновую синхронизацию с Neon
+        if self._sync_task is None or self._sync_task.done():
+            self._sync_task = asyncio.create_task(self._sync_loop(), name="neon-sync")
 
     async def stop(self) -> None:
         self._running = False
@@ -48,13 +60,56 @@ class AlertPoller:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        if self._sync_task:
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _sync_loop(self) -> None:
+        """Фоновый цикл синхронизации с Neon (2 раза в день)"""
+        logger.info("Neon sync loop started (2 times/day)")
+        try:
+            # Подключение к Neon при старте
+            await self.neon_sync.connect()
+            logger.info("Connected to Neon for backup sync")
+            
+            # Первая синхронизация через 5 минут после запуска
+            await asyncio.sleep(300)
+            await self._perform_sync()
+            
+            while self._running:
+                # Синхронизация каждые 12 часов
+                await asyncio.sleep(43200)  # 12 часов
+                await self._perform_sync()
+                
+        except asyncio.CancelledError:
+            logger.info("Neon sync loop cancelled")
+        except Exception as e:
+            logger.exception(f"Neon sync loop error: {e}")
+
+    async def _perform_sync(self) -> None:
+        """Выполняет синхронизацию с обработкой ошибок"""
+        try:
+            logger.info("Starting scheduled sync to Neon...")
+            await self.neon_sync.sync_all()
+            self._last_sync_time = datetime.now()
+            logger.info(f"Sync to Neon completed at {self._last_sync_time}")
+        except Exception as e:
+            logger.error(f"Sync to Neon failed: {e}")
+            # Не падаем, просто логируем ошибку
 
     async def _loop(self) -> None:
         logger.info("Poller started, tick=%ss, default_interval=%ss", self.interval, self.default_interval)
+        
+        # Загрузка начальных данных
         try:
             await bootstrap_active_alerts(self.db, self.kufar)
         except Exception:
             logger.exception("Startup bootstrap sync failed")
+        
+        # Основной цикл опроса
         while self._running:
             try:
                 await self._poll_once()
@@ -82,45 +137,46 @@ class AlertPoller:
                 total_sent += sent_count
             except Exception:
                 logger.exception("Failed to check alert %s", alert.id)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)  # Небольшая пауза между подписками
 
-        if not checked:
-            return
-
-        if total_new:
+        if checked > 0 and total_new > 0:
             logger.info(
                 "Poll done: %s checked, %s new ads, %s notifications sent",
                 checked,
                 total_new,
                 total_sent,
             )
-        else:
-            logger.info("Poll checked %s alert(s), no new ads", checked)
+        elif checked > 0:
+            logger.debug("Poll checked %s alert(s), no new ads", checked)
 
     async def _check_alert(self, alert: Alert) -> tuple[int, int]:
+        # Инициализация подписки (запоминаем текущие объявления)
         if await self.db.count_seen(alert.id) == 0:
             n = await seed_alert(self.db, self.kufar, alert, clear_first=False)
             logger.info("Auto-initialized alert %s with %s ads", alert.id, n)
             return 0, 0
 
+        # Поиск новых объявлений
         ads = await self.kufar.search(**alert.search_params)
         if not ads:
-            logger.info("Alert %s: Kufar returned 0 ads for current filters", alert.id)
+            logger.debug("Alert %s: Kufar returned 0 ads for current filters", alert.id)
             return 0, 0
 
         ad_ids = [int(ad["ad_id"]) for ad in ads if ad.get("ad_id")]
         new_ids = await self.db.filter_unseen(alert.id, ad_ids)
         if not new_ids:
-            logger.info(
+            logger.debug(
                 "Alert %s: search returned %s ad(s), all already seen",
                 alert.id,
                 len(ads),
             )
             return 0, 0
 
+        # Автоматическое восстановление, если нужно
         if await auto_heal_unseen(self.db, self.kufar, alert, ads, new_ids):
             return 0, 0
 
+        # Фильтруем новые объявления
         new_id_set = set(new_ids)
         new_ads = [ad for ad in ads if int(ad.get("ad_id", 0)) in new_id_set]
         new_ads.sort(key=lambda ad: ad.get("list_time", ""), reverse=False)
@@ -129,13 +185,20 @@ class AlertPoller:
         notified_ids: list[int] = []
         skipped_old_ids: list[int] = []
         notify_cooldown = await self._user_notify_cooldown(alert.user_id)
+        
         for ad in new_ads:
             ad_id = int(ad["ad_id"])
+            
+            # Пропускаем объявления, опубликованные до создания подписки
             if not is_ad_after_alert_created(ad, alert.created_at):
                 skipped_old_ids.append(ad_id)
                 continue
+                
+            # Отправка уведомления
             if await self._notify(alert, ad):
                 notified_ids.append(ad_id)
+                
+            # Соблюдаем кулдаун между уведомлениями
             if notify_cooldown > 0:
                 await asyncio.sleep(0.3)
 
@@ -146,6 +209,7 @@ class AlertPoller:
                 len(skipped_old_ids),
             )
 
+        # Отмечаем как просмотренные
         seen_ids = notified_ids + skipped_old_ids
         if seen_ids:
             await self.db.mark_seen(alert.id, seen_ids)
@@ -192,6 +256,7 @@ class AlertPoller:
         if not await self._can_notify_user(alert.user_id):
             return False
 
+        # Подготовка данных для уведомления
         image_urls = get_image_urls(ad)
         db_user = await self.db.get_user(alert.user_id)
         display = db_user.settings.notification_display if db_user else None
@@ -223,7 +288,9 @@ class AlertPoller:
                 preview_url=preview_url,
                 photos_enabled=photos_enabled,
             )
+            
             if sent is not None:
+                # Запись в SQLite
                 await self.db.record_notification(
                     alert.user_id,
                     alert.id,
