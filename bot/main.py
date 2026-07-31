@@ -29,6 +29,151 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def restore_from_neon(db: Database, database_url: str) -> bool:
+    """
+    Восстанавливает данные из Neon в SQLite при первом запуске.
+    Возвращает True, если данные были восстановлены.
+    """
+    try:
+        from bot.sync_to_neon import NeonSync
+        
+        logger.info("Checking Neon for backup data...")
+        sync = NeonSync()
+        await sync.connect()
+        
+        if not sync.neon_pool:
+            logger.warning("Could not connect to Neon, skipping restore")
+            return False
+        
+        # Проверяем, есть ли данные в Neon
+        async with sync.neon_pool.acquire() as conn:
+            users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            
+            if users_count == 0:
+                logger.info("No data in Neon, nothing to restore")
+                await sync.close()
+                return False
+            
+            logger.info(f"Found {users_count} users in Neon, restoring...")
+            
+            # Получаем все данные из Neon
+            users = await conn.fetch("SELECT * FROM users")
+            alerts = await conn.fetch("SELECT * FROM alerts")
+            seen_ads = await conn.fetch("SELECT * FROM seen_ads")
+            notifications = await conn.fetch(
+                "SELECT * FROM notification_messages WHERE created_at > NOW() - INTERVAL '1 day'"
+            )
+            config = await conn.fetch("SELECT * FROM bot_config")
+            
+            # Сохраняем в SQLite
+            sqlite_conn = db._sqlite_conn()
+            
+            # Очищаем SQLite
+            sqlite_conn.execute("DELETE FROM users")
+            sqlite_conn.execute("DELETE FROM alerts")
+            sqlite_conn.execute("DELETE FROM seen_ads")
+            sqlite_conn.execute("DELETE FROM notification_messages")
+            sqlite_conn.execute("DELETE FROM bot_config")
+            
+            # Восстанавливаем пользователей
+            for row in users:
+                d = dict(row)
+                sqlite_conn.execute(
+                    """
+                    INSERT INTO users (user_id, username, first_name, last_name, 
+                                       role, active, settings_json, created_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        d.get('user_id'),
+                        d.get('username'),
+                        d.get('first_name'),
+                        d.get('last_name'),
+                        d.get('role', 'user'),
+                        d.get('active', 1),
+                        d.get('settings_json', '{}'),
+                        d.get('created_at'),
+                        d.get('last_seen_at')
+                    )
+                )
+            
+            # Восстанавливаем алерты
+            for row in alerts:
+                d = dict(row)
+                sqlite_conn.execute(
+                    """
+                    INSERT INTO alerts (id, user_id, name, query, params_json, active, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        d.get('id'),
+                        d.get('user_id'),
+                        d.get('name'),
+                        d.get('query', ''),
+                        d.get('params_json', '{}'),
+                        d.get('active', 1),
+                        d.get('created_at')
+                    )
+                )
+            
+            # Восстанавливаем просмотренные объявления
+            for row in seen_ads:
+                d = dict(row)
+                sqlite_conn.execute(
+                    """
+                    INSERT INTO seen_ads (alert_id, ad_id, seen_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        d.get('alert_id'),
+                        d.get('ad_id'),
+                        d.get('seen_at')
+                    )
+                )
+            
+            # Восстанавливаем уведомления
+            for row in notifications:
+                d = dict(row)
+                sqlite_conn.execute(
+                    """
+                    INSERT INTO notification_messages (user_id, alert_id, chat_id, message_id, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        d.get('user_id'),
+                        d.get('alert_id'),
+                        d.get('chat_id'),
+                        d.get('message_id'),
+                        d.get('created_at')
+                    )
+                )
+            
+            # Восстанавливаем конфиг
+            for row in config:
+                d = dict(row)
+                sqlite_conn.execute(
+                    """
+                    INSERT INTO bot_config (key, value)
+                    VALUES (?, ?)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                    """,
+                    (
+                        d.get('key'),
+                        d.get('value')
+                    )
+                )
+            
+            sqlite_conn.commit()
+            logger.info(f"Restored from Neon: {len(users)} users, {len(alerts)} alerts, {len(seen_ads)} seen ads")
+            
+            await sync.close()
+            return True
+            
+    except Exception as e:
+        logger.warning(f"Could not restore from Neon: {e}")
+        return False
+
+
 async def main() -> None:
     # Запускаем веб-сервер для health check (Flask)
     run_web_in_thread()
@@ -52,6 +197,21 @@ async def main() -> None:
         db = Database(db_path=app_settings.database_path)
         await db.init(admin_user_ids=app_settings.admin_user_ids)
         logger.info("SQLite initialized at %s", app_settings.database_path)
+        
+        # --- ВОССТАНОВЛЕНИЕ ДАННЫХ ИЗ NEON (ПРИ ПЕРВОМ ЗАПУСКЕ) ---
+        # Проверяем, есть ли данные в SQLite
+        users_count = await db.count_users()
+        if users_count == 0 and app_settings.database_url:
+            logger.info("SQLite is empty, attempting to restore from Neon...")
+            restored = await restore_from_neon(db, app_settings.database_url)
+            if restored:
+                logger.info("Data restored from Neon successfully!")
+            else:
+                logger.info("No data to restore from Neon, starting fresh")
+        elif users_count == 0:
+            logger.info("No data in SQLite, starting fresh")
+        else:
+            logger.info(f"SQLite already has {users_count} users, skipping restore")
 
     # --- БЛОКИРОВКА ДЛЯ ПРЕДОТВРАЩЕНИЯ ДВОЙНОГО ЗАПУСКА ---
     lock_path = Path(app_settings.database_path).with_suffix(".lock")
