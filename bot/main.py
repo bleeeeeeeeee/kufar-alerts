@@ -38,18 +38,20 @@ async def main() -> None:
     
     # --- ВЫБОР БАЗЫ ДАННЫХ: POSTGRESQL ИЛИ SQLITE ---
     if app_settings.database_url:
-        # Используем PostgreSQL (Aiven)
-        logger.info("Using PostgreSQL database (Aiven)")
-        db = Database(app_settings.database_url)
+        # Используем PostgreSQL (Neon) - ТОЛЬКО ДЛЯ БЭКАПОВ
+        logger.info("Using PostgreSQL database (Neon) for backup only")
+        db = Database(dsn=app_settings.database_url)
         await db.init(admin_user_ids=app_settings.admin_user_ids)
+        logger.info("PostgreSQL initialized (backup mode)")
     else:
-        # Используем SQLite (локально или PythonAnywhere)
-        logger.info("Using SQLite database")
+        # Используем SQLite - ОСНОВНАЯ БД
+        logger.info("Using SQLite database as primary database")
+        # Убеждаемся, что папка существует
         Path(app_settings.database_path).parent.mkdir(parents=True, exist_ok=True)
-        # Если у вас есть отдельный файл для SQLite, импортируйте его
-        from bot.database_sqlite import Database as SQLiteDatabase
-        db = SQLiteDatabase(app_settings.database_path)
+        # Используем единый класс Database без dsn
+        db = Database(db_path=app_settings.database_path)
         await db.init(admin_user_ids=app_settings.admin_user_ids)
+        logger.info("SQLite initialized at %s", app_settings.database_path)
 
     # --- БЛОКИРОВКА ДЛЯ ПРЕДОТВРАЩЕНИЯ ДВОЙНОГО ЗАПУСКА ---
     lock_path = Path(app_settings.database_path).with_suffix(".lock")
@@ -98,7 +100,10 @@ async def main() -> None:
                 poller.start()
 
                 # --- ЗАПУСК БОТА ---
-                logger.info("Bot started")
+                logger.info("Bot started successfully!")
+                logger.info("Poll interval: %s seconds", app_settings.poll_interval)
+                logger.info("Database: %s", "PostgreSQL" if app_settings.database_url else "SQLite")
+                
                 await bot.delete_webhook(drop_pending_updates=True)
                 try:
                     await dp.start_polling(
