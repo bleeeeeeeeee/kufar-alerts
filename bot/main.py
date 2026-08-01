@@ -69,6 +69,10 @@ async def main() -> None:
             )
             dp = Dispatcher(storage=MemoryStorage())
 
+            # --- УДАЛЯЕМ WEBHOOK ПРИ СТАРТЕ (ОБЯЗАТЕЛЬНО ДЛЯ POLLING) ---
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook deleted, polling mode enabled")
+
             # Сессия для Kufar API
             async with aiohttp.ClientSession() as session:
                 kufar = KufarClient(session, search_size=app_settings.search_size)
@@ -108,8 +112,7 @@ async def main() -> None:
                 logger.info("Bot started successfully!")
                 logger.info("Poll interval: %s seconds", app_settings.poll_interval)
                 logger.info("Database: %s", "Supabase" if app_settings.database_url else "SQLite")
-                
-                await bot.delete_webhook(drop_pending_updates=True)
+
                 try:
                     await dp.start_polling(
                         bot,
