@@ -179,9 +179,11 @@ class Database:
             await self._init_sqlite(admin_user_ids)
 
     async def _init_postgres(self, admin_user_ids: tuple[int, ...]) -> None:
-        """Инициализация PostgreSQL (Neon) - только для бэкапов."""
-        logger.info("Connecting to PostgreSQL database...")
+        """Инициализация PostgreSQL (Supabase)."""
+        logger.info("Connecting to Supabase PostgreSQL database...")
         
+        # Создаем SSL-контекст для Supabase
+        import ssl
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
@@ -192,16 +194,17 @@ class Database:
             max_size=5,
             timeout=60.0,
             ssl=ssl_context,
+            statement_cache_size=0  # ОТКЛЮЧАЕМ prepared statements
         )
         
         async with self._db() as conn:
             await conn.execute(SCHEMA)
-            logger.info("PostgreSQL schema created/verified")
+            logger.info("Supabase schema created/verified")
 
         await self._bootstrap_users(admin_user_ids)
         alerts, seen = await self.stats()
         users = await self.count_users()
-        logger.info("PostgreSQL ready: %s alerts, %s seen, %s users", alerts, seen, users)
+        logger.info("Supabase ready: %s alerts, %s seen, %s users", alerts, seen, users)
         self._ready = True
 
     async def _init_sqlite(self, admin_user_ids: tuple[int, ...]) -> None:
